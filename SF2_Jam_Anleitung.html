@@ -1,0 +1,411 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SF2 Live Jam – Übersicht & Anleitung</title>
+<style>
+  :root {
+    --bg: #0b0b10; --panel: #10101a; --border: #1f1f35;
+    --accent: #00e5ff; --accent2: #69ff47; --accent3: #ffb830;
+    --text: #b0b0c8; --bright: #ddddf0;
+    --code-bg: #07070f;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: var(--bg); color: var(--text);
+    font-family: 'Segoe UI', system-ui, sans-serif;
+    font-size: 15px; line-height: 1.7;
+    max-width: 900px; margin: 0 auto; padding: 32px 20px 60px;
+  }
+  h1 { font-size: 2rem; color: var(--accent); margin-bottom: 6px; }
+  h2 { font-size: 1.2rem; color: var(--accent2); margin: 32px 0 12px;
+       border-bottom: 1px solid var(--border); padding-bottom: 6px; }
+  h3 { font-size: 1rem; color: var(--accent3); margin: 20px 0 8px; }
+  p  { margin-bottom: 10px; }
+  a  { color: var(--accent); }
+  .subtitle { color: var(--text); opacity: .6; font-size: .9rem; margin-bottom: 32px; }
+
+  /* Boxes */
+  .box {
+    background: var(--panel); border: 1px solid var(--border);
+    border-radius: 10px; padding: 16px 20px; margin-bottom: 16px;
+  }
+  .box.green  { border-color: #69ff4755; }
+  .box.blue   { border-color: #00e5ff55; }
+  .box.orange { border-color: #ffb83055; }
+  .box.red    { border-color: #ff406055; }
+
+  /* Code */
+  code {
+    background: var(--code-bg); border: 1px solid var(--border);
+    border-radius: 4px; padding: 1px 6px;
+    font-family: 'Consolas', 'Share Tech Mono', monospace;
+    font-size: .88em; color: var(--accent);
+  }
+  pre {
+    background: var(--code-bg); border: 1px solid var(--border);
+    border-radius: 8px; padding: 14px 16px; margin: 10px 0 16px;
+    overflow-x: auto; font-family: 'Consolas', monospace; font-size: .88em;
+  }
+  pre .comment { color: #3a3a6a; }
+  pre .cmd     { color: var(--accent2); }
+  pre .url     { color: var(--accent3); }
+  pre .key     { color: var(--accent); }
+
+  /* Table */
+  table { width: 100%; border-collapse: collapse; margin: 10px 0 16px; }
+  th { background: var(--panel); color: var(--accent); font-size: .82rem;
+       letter-spacing: .08em; text-transform: uppercase; padding: 8px 12px;
+       text-align: left; border-bottom: 1px solid var(--border); }
+  td { padding: 8px 12px; border-bottom: 1px solid var(--border); font-size: .92rem; }
+  tr:last-child td { border-bottom: none; }
+
+  /* Steps */
+  .steps { counter-reset: step; display: flex; flex-direction: column; gap: 10px; }
+  .step {
+    display: flex; gap: 14px; align-items: flex-start;
+    background: var(--panel); border: 1px solid var(--border);
+    border-radius: 9px; padding: 14px 16px;
+  }
+  .step::before {
+    counter-increment: step;
+    content: counter(step);
+    background: var(--accent); color: #000;
+    font-weight: 700; font-size: .85rem;
+    width: 26px; height: 26px; border-radius: 50%;
+    display: flex; align-items: center; justify-content: center;
+    flex-shrink: 0; margin-top: 2px;
+  }
+  .step.green::before { background: var(--accent2); }
+  .step.orange::before { background: var(--accent3); }
+
+  /* Tag badges */
+  .tag {
+    display: inline-block; font-size: .68rem; letter-spacing: .08em;
+    padding: 2px 8px; border-radius: 10px; border: 1px solid;
+    font-family: monospace; vertical-align: middle; margin-left: 6px;
+  }
+  .tag.ok  { color: var(--accent2); border-color: #69ff4755; }
+  .tag.warn { color: var(--accent3); border-color: #ffb83055; }
+  .tag.new  { color: var(--accent); border-color: #00e5ff55; }
+
+  /* Divider */
+  hr { border: none; border-top: 1px solid var(--border); margin: 28px 0; }
+
+  /* Icon row */
+  .icon-row { display: flex; flex-wrap: wrap; gap: 10px; margin: 10px 0; }
+  .icon-item {
+    background: var(--code-bg); border: 1px solid var(--border);
+    border-radius: 8px; padding: 8px 14px;
+    font-size: .85rem; display: flex; align-items: center; gap: 8px;
+  }
+  .icon-item .icon { font-size: 1.1rem; }
+</style>
+</head>
+<body>
+
+<h1>🎸 SF2 Live Jam</h1>
+<div class="subtitle">Übersicht · Ablauf · Einstellungen — Stand: aktuell</div>
+
+<!-- ═══════════════════════════════════════════════════════════ -->
+<h2>📁 Dateien</h2>
+
+<table>
+  <tr><th>Datei</th><th>Wohin</th><th>Funktion</th></tr>
+  <tr>
+    <td><code>sf2_player.html</code></td>
+    <td>Jedes Gerät (Browser öffnen)</td>
+    <td>Die komplette App — Instrument, Posaune, Jam-Panel</td>
+  </tr>
+  <tr>
+    <td><code>jam_server.js</code></td>
+    <td>Nur auf dem <b>Server-Laptop</b></td>
+    <td>WebSocket-Server — vermittelt alle Verbindungen</td>
+  </tr>
+  <tr>
+    <td><code>package.json</code></td>
+    <td>Gleicher Ordner wie jam_server.js</td>
+    <td>Node.js-Abhängigkeiten (nur <code>ws</code>)</td>
+  </tr>
+</table>
+
+<!-- ═══════════════════════════════════════════════════════════ -->
+<h2>🖥 Server starten (einmalig einrichten)</h2>
+
+<div class="box green">
+  <strong>Voraussetzung:</strong> <a href="https://nodejs.org" target="_blank">Node.js</a> installiert (LTS-Version reicht)
+</div>
+
+<pre><span class="comment"># Einmalig — Abhängigkeiten installieren:</span>
+<span class="cmd">npm install</span>
+
+<span class="comment"># Server starten:</span>
+<span class="cmd">node jam_server.js</span>
+
+<span class="comment"># Ausgabe:</span>
+<span class="url">🎸 SF2 Jam Server läuft auf Port 8765</span></pre>
+
+<h3>Tunnel für Internet-Mitspieler (localhost.run)</h3>
+<p>In einem <strong>zweiten Terminal</strong> — kein Account, kein Token nötig:</p>
+
+<pre><span class="cmd">ssh -R 80:localhost:8765 nokey@localhost.run</span>
+
+<span class="comment"># Ausgabe — diese URL an alle Mitspieler schicken:</span>
+<span class="url">your url is: https://abc123def.lhr.life</span></pre>
+
+<div class="box orange">
+  ⚠️ Die URL ändert sich bei jedem Neustart des Tunnels — einfach per WhatsApp/Signal teilen.
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════ -->
+<h2>🔌 Verbinden (alle Mitspieler)</h2>
+
+<div class="steps">
+  <div class="step">
+    <div>
+      <strong>sf2_player.html im Browser öffnen</strong><br>
+      Chrome oder Edge empfohlen (Firefox geht auch). Auf dem Handy: direkt im Browser öffnen.
+    </div>
+  </div>
+  <div class="step">
+    <div>
+      <strong>SF2-Datei laden</strong><br>
+      Auf <em>＋ SF2 laden</em> klicken. Alle Mitspieler sollten <strong>denselben Soundfont</strong> haben
+      damit die Instrumente gleich klingen (z.B. FluidR3_GM.sf2 — kostenlos).
+    </div>
+  </div>
+  <div class="step green">
+    <div>
+      <strong>Jam-Panel öffnen</strong> — Sprungmarke <em>🌐 Jam</em> in der Nav-Leiste<br>
+      <ul style="margin-top:6px;padding-left:20px">
+        <li><strong>Name eingeben</strong> — wird allen angezeigt</li>
+        <li><strong>Server-URL eintragen:</strong>
+          <ul style="margin-top:4px">
+            <li>Gleiches WLAN: <code>ws://192.168.X.X:8765</code></li>
+            <li>Über Internet: <code>wss://abc123def.lhr.life</code></li>
+          </ul>
+        </li>
+        <li><strong>🔌 Verbinden</strong> klicken</li>
+      </ul>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════ -->
+<h2>🎛 Mitspieler-Mixer</h2>
+
+<p>Nach dem Verbinden erscheint für jeden Mitspieler eine Zeile im Mixer:</p>
+
+<table>
+  <tr><th>Element</th><th>Funktion</th></tr>
+  <tr>
+    <td>Farbiger Punkt + Name</td>
+    <td>Jeder Spieler hat eine eindeutige Farbe. Zeile blinkt kurz bei jeder Note.</td>
+  </tr>
+  <tr>
+    <td>Preset-Chips</td>
+    <td>
+      Zeigt welches Instrument der Mitspieler gerade hat.<br>
+      <span style="color:#69ff47">■ Fett</span> = exakt gleicher Sound geladen<br>
+      <span style="color:#666">≈ Grau</span> = ähnlicher Sound (anderer SF2)
+    </td>
+  </tr>
+  <tr>
+    <td>🎙 Indikator</td>
+    <td>Leuchtet auf wenn der Spieler gerade spricht/singt (per Mikrofon)</td>
+  </tr>
+  <tr>
+    <td>🔊 Schieberegler (klein)</td>
+    <td>Mikrofon-Lautstärke dieses Spielers</td>
+  </tr>
+  <tr>
+    <td>Großer Schieberegler</td>
+    <td>MIDI-Noten-Lautstärke dieses Spielers</td>
+  </tr>
+  <tr>
+    <td>🔇 Button</td>
+    <td>Diesen Spieler komplett stumm schalten (Noten + Mikrofon)</td>
+  </tr>
+</table>
+
+<!-- ═══════════════════════════════════════════════════════════ -->
+<h2>🎙 Mikrofon / Audio</h2>
+
+<p>Im Jam-Panel über dem Mixer:</p>
+
+<table>
+  <tr><th>Einstellung</th><th>Wann verwenden</th></tr>
+  <tr>
+    <td>🎤 <strong>Gesang / Headset</strong></td>
+    <td>
+      Stimme, Headset, Freisprechen.<br>
+      Echo-Unterdrückung ✅ · Rauschfilter ✅ · Auto-Gain ✅
+    </td>
+  </tr>
+  <tr>
+    <td>🎸 <strong>Instrument / Line-In</strong></td>
+    <td>
+      E-Gitarre (Kabel), Keyboard-Line-Out, Mikrofon vor Verstärker.<br>
+      Echo-Unterdrückung ❌ · Rauschfilter ❌ · Auto-Gain ❌<br>
+      <em>(wichtig: Rauschfilter würde Gitarren-Sustain abschneiden)</em>
+    </td>
+  </tr>
+</table>
+
+<div class="steps">
+  <div class="step green">
+    <div>
+      Modus wählen (Gesang oder Instrument)
+    </div>
+  </div>
+  <div class="step green">
+    <div>
+      <strong>🎙</strong> klicken → Browser fragt nach Mikrofon-Erlaubnis → erlauben
+    </div>
+  </div>
+  <div class="step green">
+    <div>
+      VU-Meter zeigt deinen Pegel. <strong>🔇</strong> zum vorübergehenden Stummschalten.
+    </div>
+  </div>
+</div>
+
+<div class="box orange">
+  <strong>Latenz-Hinweis:</strong> Peer-to-Peer Audio über Internet = ca. 50–150ms.
+  Für Gesang/Absprechen gut geeignet. Exaktes rhythmisches Zusammenspielen ist bei großen Entfernungen physikalisch begrenzt.
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════ -->
+<h2>♩ Metronom-Sync</h2>
+
+<p>Das Metronom ist automatisch synchronisiert:</p>
+<ul style="padding-left:20px;margin-bottom:10px">
+  <li>Wer BPM ändert → alle sehen und hören die neue BPM</li>
+  <li>Wer Start/Stop drückt → startet/stoppt bei allen</li>
+  <li>Neu verbundene Spieler bekommen den aktuellen Metronom-Stand automatisch</li>
+</ul>
+
+<!-- ═══════════════════════════════════════════════════════════ -->
+<h2>🌐 Was wird über das Netz übertragen?</h2>
+
+<table>
+  <tr><th>Daten</th><th>Technik</th><th>Über Server?</th></tr>
+  <tr>
+    <td>🎵 Noten (welche Taste, wann, wie laut)</td>
+    <td>WebSocket</td>
+    <td>✅ Ja — winzige Events (Bytes)</td>
+  </tr>
+  <tr>
+    <td>🎹 Welches Instrument aktiv</td>
+    <td>WebSocket</td>
+    <td>✅ Ja — bei jeder Layer-Änderung</td>
+  </tr>
+  <tr>
+    <td>♩ Metronom BPM / Start/Stop</td>
+    <td>WebSocket</td>
+    <td>✅ Ja</td>
+  </tr>
+  <tr>
+    <td>💬 Chat-Nachrichten</td>
+    <td>WebSocket</td>
+    <td>✅ Ja</td>
+  </tr>
+  <tr>
+    <td>🎙 Mikrofon / Audio</td>
+    <td>WebRTC (Peer-to-Peer)</td>
+    <td>❌ Nein — direkt zwischen Geräten</td>
+  </tr>
+</table>
+
+<!-- ═══════════════════════════════════════════════════════════ -->
+<h2>🔧 Layer-Einstellungen für Remote-Noten</h2>
+
+<p>Jeder Layer hat Quellen-Filter-Buttons (in den Layer-Details aufklappen):</p>
+
+<div class="icon-row">
+  <div class="icon-item"><span class="icon">🖥</span> Screen — eigene Klaviatur</div>
+  <div class="icon-item"><span class="icon">⌨</span> Keys — PC-Tastatur</div>
+  <div class="icon-item"><span class="icon">🎹</span> MIDI — USB-Gerät</div>
+  <div class="icon-item"><span class="icon">▶</span> Player — Recorder</div>
+  <div class="icon-item"><span class="icon">🌐</span> Remote — Jam-Noten</div>
+</div>
+
+<p>Wenn ein Layer auf <strong>🌐 Remote</strong> reagieren soll, muss der Button aktiv (leuchtet) sein.
+Standardmäßig sind alle Quellen aktiv.</p>
+
+<!-- ═══════════════════════════════════════════════════════════ -->
+<h2>📶 Server-Optionen im Überblick</h2>
+
+<table>
+  <tr><th>Option</th><th>Vorteil</th><th>Nachteil</th></tr>
+  <tr>
+    <td>🖥 <strong>Laptop (Windows/Linux)</strong></td>
+    <td>Einfach, stabil, kein Aufwand</td>
+    <td>Muss laufen wenn gejammt wird</td>
+  </tr>
+  <tr>
+    <td>📱 <strong>Android (Termux)</strong></td>
+    <td>Immer dabei, WLAN-unabhängig</td>
+    <td>Akku-Optimierung ausschalten nötig</td>
+  </tr>
+  <tr>
+    <td>🥧 <strong>Raspberry Pi</strong> (später)</td>
+    <td>24/7, ~3W Stromverbrauch, feste URL möglich</td>
+    <td>Einmalige Einrichtung nötig</td>
+  </tr>
+</table>
+
+<h3>localhost.run — Tunnel-Befehl</h3>
+<pre><span class="cmd">ssh -R 80:localhost:8765 nokey@localhost.run</span>
+<span class="comment"># → wss://XXXXX.lhr.life  (in SF2 Player eintragen)</span></pre>
+
+<div class="box blue">
+  <strong>Tipp Raspberry Pi:</strong> Autostart einrichten:<br><br>
+  <code>sudo nano /etc/systemd/system/jam.service</code><br>
+  → Server startet automatisch beim Boot, localhost.run Tunnel als zweiter Dienst.
+  Dann ändert sich die URL nie mehr.
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════ -->
+<h2>❓ Häufige Probleme</h2>
+
+<table>
+  <tr><th>Problem</th><th>Lösung</th></tr>
+  <tr>
+    <td>Verbindung schlägt fehl</td>
+    <td>URL prüfen: <code>ws://</code> für lokal, <code>wss://</code> für localhost.run</td>
+  </tr>
+  <tr>
+    <td>Noten hört man nicht</td>
+    <td>SF2-Datei laden · Layer hat 🌐 Remote aktiviert · Mixer-Lautstärke > 0</td>
+  </tr>
+  <tr>
+    <td>Instrument klingt anders</td>
+    <td>Preset-Chip erscheint grau (≈) → gleichen SF2 laden wie Mitspieler</td>
+  </tr>
+  <tr>
+    <td>Mikrofon-Erlaubnis verweigert</td>
+    <td>Browser-Einstellungen → Kamera & Mikrofon → erlauben</td>
+  </tr>
+  <tr>
+    <td>Gitarren-Sustain wird abgehackt</td>
+    <td>Modus auf 🎸 Instrument/Line-In stellen</td>
+  </tr>
+  <tr>
+    <td>Server stirbt auf Android</td>
+    <td>Akku-Optimierung für Termux deaktivieren (Einstellungen → Apps → Termux)</td>
+  </tr>
+  <tr>
+    <td>localhost.run URL ändert sich</td>
+    <td>Normal — URL nach jedem Neustart kurz teilen. Raspberry Pi = feste URL</td>
+  </tr>
+</table>
+
+<hr>
+<p style="font-size:.8rem;color:var(--text);opacity:.4;text-align:center">
+  SF2 Live Jam · Ensemble Edition · alle Daten Peer-to-Peer (Audio) oder über eigenen Server (MIDI)
+</p>
+
+</body>
+</html>
