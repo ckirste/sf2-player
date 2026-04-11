@@ -970,7 +970,7 @@ input[type=range]::-moz-range-thumb{width:15px;height:15px;background:var(--acce
 
   <div class="header">
     <button class="fs-toggle" id="fsToggleBtn" title="Vollbild ein/aus">⛶</button>
-    <h1>Ensemble_v40</h1>
+    <h1>Ensemble</h1>
     <div class="sub">Offline · Keine Abhängigkeiten</div>
     <button class="settings-toggle" id="settingsToggle" title="Erscheinungsbild anpassen">⚙</button>
   </div>
@@ -2052,11 +2052,10 @@ async ensureCtx() {
 
     onProgress('Presets werden gelesen…', 90);
 
-    // Build preset list (matching our existing format).
-    // v4 merges alle geladenen SF2s in eine globale presetList —
-    // deshalb nach jedem Load ALLE soundfonts neu aufbauen.
+    // v4: Presets pro Bank aus soundBankManager holen — nicht die globale Merge-Liste.
+    // Jede SF bekommt so exklusiv ihre eigenen Presets.
     const sfIdx = this.soundfonts.length;
-    const presets = this._buildPresetList();
+    const presets = this._buildPresetListForId(sfId);
 
     this.soundfonts.push({
       name,
@@ -2067,27 +2066,49 @@ async ensureCtx() {
       parser:        null,
     });
 
-    // Alle bisherigen soundfonts bekommen ebenfalls die aktualisierte Liste
-    // (v4-Merger enthält nun Presets aller geladenen SF2s)
-    for (let i = 0; i < sfIdx; i++) {
-      this.soundfonts[i].presets         = presets;
-      this.soundfonts[i].expandedZones   = new Array(presets.length).fill(null);
-    }
-
     onProgress('Fertig!', 100);
     return { sfIdx, presets };
   }
 
-  _buildPresetList() {
+  // Baut die Preset-Liste für eine einzelne SF2 anhand ihrer sfId.
+  // v4: soundBankManager.soundBankList[i].soundBank.presets enthält die
+  // Presets exklusiv dieser Bank — nicht die globale Merge-Liste.
+  _buildPresetListForId(sfId) {
+    try {
+      const entry = this.synth.soundBankManager.soundBankList
+        .find(e => e.id === sfId);
+      if (!entry) {
+        console.warn('soundBankList: sfId nicht gefunden:', sfId);
+        return this._buildPresetListFallback();
+      }
+      const raw = entry.soundBank.presets ?? [];
+      console.log(`presets für ${sfId}:`, raw.length);
+      return raw.map((p, i) => ({
+        name:    p.name    ?? ('Preset ' + i),
+        program: p.program ?? i,
+        bank:    p.bankMSB ?? 0,
+        bankLSB: p.bankLSB ?? 0,
+        isDrum:  p.isAnyDrums ?? false,
+        zones:   [],
+      }));
+    } catch(e) {
+      console.warn('_buildPresetListForId error:', e);
+      return this._buildPresetListFallback();
+    }
+  }
+
+  // Fallback: globale Merge-Liste (wie bisher)
+  _buildPresetList() { return this._buildPresetListFallback(); }
+  _buildPresetListFallback() {
     try {
       const rawPresets = this.synth.presetList ?? [];
-      console.log("presetList Länge:", rawPresets.length);
+      console.log("presetList Länge (global):", rawPresets.length);
       return rawPresets.map((p, i) => ({
-        name:    p.name     ?? ('Preset ' + i),  // v4: name statt presetName
+        name:    p.name     ?? ('Preset ' + i),
         program: p.program  ?? i,
-        bank:    p.bankMSB  ?? 0,                 // v4: bankMSB statt bank
+        bank:    p.bankMSB  ?? 0,
         bankLSB: p.bankLSB  ?? 0,
-        isDrum:  p.isAnyDrums ?? false,           // v4: direktes Drum-Flag
+        isDrum:  p.isAnyDrums ?? false,
         zones:   [],
       }));
     } catch(e) {
