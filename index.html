@@ -983,7 +983,7 @@ input[type=range]::-moz-range-track{height:6px;background:inherit;border-radius:
   <div class="header">
     <button class="fs-toggle" id="fsToggleBtn" title="Vollbild ein/aus">⛶</button>
     <h1>Ensemble_v40</h1>
-    <div class="sub">by c. kirste &nbsp;&nbsp; <span id="buildVersion" style="opacity:.7;font-size:.6em;letter-spacing:.15em"></span></div>
+    <div class="sub">by c. kirste &nbsp;·&nbsp; <span id="buildVersion" style="opacity:.7;font-size:.6em;letter-spacing:.15em"></span></div>
     <button class="settings-toggle" id="settingsToggle" title="Erscheinungsbild anpassen">⚙</button>
   </div>
 
@@ -1483,6 +1483,7 @@ input[type=range]::-moz-range-track{height:6px;background:inherit;border-radius:
 
 <script type="module">
 import { WorkletSynthesizer, audioBufferToWav } from "spessasynth_lib";
+import { SoundBankLoader } from "spessasynth_core";
 
 // --- MOBILE DEBUGGER ---
 const debugDiv = document.createElement('div');
@@ -2071,23 +2072,55 @@ async ensureCtx() {
     // übergeben wir eine Kopie. SpessaSynth detacht diese Kopie, nicht das Original.
     const sfId = `sf_${Date.now()}`;
     try {
-      // Snapshot der globalen presetList VOR dem Laden — zum Diff danach
-      const preListBefore = (this.synth.presetList ?? []).map(p => `${p.program}:${p.bankMSB}:${p.bankLSB}`);
+      // Schritt 1: SF2 auf dem Main Thread parsen — nur für die Preset-Metadaten.
+      // SoundBankLoader.fromArrayBuffer() ist synchron und läuft NICHT im Worklet.
+      // Das ist keine zweite Synthesizer-Instanz → kein Performance-Problem.
+      let parsedPresets = [];
+      try {
+        const bank = SoundBankLoader.fromArrayBuffer(arrayBuffer.slice(0));
+        parsedPresets = (bank.presets ?? []).map((p, i) => ({
+          name:    p.name       ?? ('Preset ' + i),
+          program: p.program    ?? i,
+          bank:    p.bankMSB    ?? 0,
+          bankLSB: p.bankLSB    ?? 0,
+          isDrum:  p.isAnyDrums ?? false,
+          zones:   [],
+        }));
+        // Ressourcen freigeben
+        if (typeof bank.destroySoundBank === 'function') bank.destroySoundBank();
+        console.log(`SoundBankLoader: ${parsedPresets.length} Presets für ${sfId}`);
+      } catch(parseErr) {
+        console.warn('SoundBankLoader Fallback auf presetList-Diff:', parseErr.message);
+      }
+
+      // Schritt 2: Buffer in den Worklet transferieren (Zero-Copy-Kopie)
+      const preListBefore = parsedPresets.length === 0
+        ? (this.synth.presetList ?? []).map(p => `${p.program}:${p.bankMSB}:${p.bankLSB}`)
+        : null;
 
       await this.synth.soundBankManager.addSoundBank(arrayBuffer.slice(0), sfId);
-      console.log('SF2 geladen:', sfId, 'presetList:', this.synth.presetList?.length);
+      console.log('SF2 Worklet geladen:', sfId, 'total presetList:', this.synth.presetList?.length);
       arrayBuffer = null;
 
-      // Diff: Presets die nach dem Laden NEU in der globalen Liste sind → gehören dieser SF
-      const preListAfter = this.synth.presetList ?? [];
-      const beforeSet = new Set(preListBefore);
-      const newPresets = preListAfter.filter(p =>
-        !beforeSet.has(`${p.program}:${p.bankMSB}:${p.bankLSB}`)
-      );
-      // Falls kein Diff (z.B. selbe SF nochmal geladen): alle nehmen
+      // Falls SoundBankLoader fehlschlug: Diff-Fallback
+      if (parsedPresets.length === 0 && preListBefore) {
+        const beforeSet = new Set(preListBefore);
+        const newRaw = (this.synth.presetList ?? [])
+          .filter(p => !beforeSet.has(`${p.program}:${p.bankMSB}:${p.bankLSB}`));
+        parsedPresets = (newRaw.length > 0 ? newRaw : this.synth.presetList ?? [])
+          .map((p, i) => ({
+            name:    p.name       ?? ('Preset ' + i),
+            program: p.program    ?? i,
+            bank:    p.bankMSB    ?? 0,
+            bankLSB: p.bankLSB    ?? 0,
+            isDrum:  p.isAnyDrums ?? false,
+            zones:   [],
+          }));
+        console.log(`Diff-Fallback: ${parsedPresets.length} Presets`);
+      }
+
       this._sfPresetCache = this._sfPresetCache || new Map();
-      this._sfPresetCache.set(sfId, newPresets.length > 0 ? newPresets : [...preListAfter]);
-      console.log(`Presets für ${sfId}:`, (this._sfPresetCache.get(sfId) || []).length);
+      this._sfPresetCache.set(sfId, parsedPresets);
     } catch(e) {
       throw new Error('SF2 Ladefehler: ' + e.message);
     }
