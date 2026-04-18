@@ -991,7 +991,7 @@ input[type=range]::-moz-range-track{height:6px;background:inherit;border-radius:
   <div class="header">
     <button class="fs-toggle" id="fsToggleBtn" title="Vollbild ein/aus">⛶</button>
     <h1>Ensemble_v40</h1>
-    <div class="sub">by c. kirste &nbsp;·&nbsp; <span id="buildVersion" style="opacity:.7;font-size:.6em;letter-spacing:.15em"></span></div>
+    <div class="sub">by c. kirste</div>
     <button class="settings-toggle" id="settingsToggle" title="Erscheinungsbild anpassen">⚙</button>
   </div>
 
@@ -1009,6 +1009,7 @@ input[type=range]::-moz-range-track{height:6px;background:inherit;border-radius:
       <div class="settings-sizes" id="settingsLabels"></div>
 
       <div class="settings-footer">
+        <button class="settings-reset-btn" id="debugToggleBtn" style="margin-right:auto">🐛 Debug: AUS</button>
         <button class="settings-reset-btn" id="settingsResetBtn">↺ Zurücksetzen</button>
       </div>
     </div>
@@ -1139,10 +1140,10 @@ input[type=range]::-moz-range-track{height:6px;background:inherit;border-radius:
       <div class="kb-scroll" id="kbScroll" style="flex:1">
         <div class="keyboard" id="keyboard"></div>
       </div>
-      <div id="pitchBendSidebar" style="width:40px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:3px;border-left:1px solid var(--border);padding:4px 2px;touch-action:none;user-select:none;background:var(--panel);flex-shrink:0">
+      <div id="pitchBendSidebar" style="width:80px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:3px;border-left:1px solid var(--border);padding:4px 2px;touch-action:none;user-select:none;background:var(--panel);flex-shrink:0">
           <label id="pitchBendLabel" style="cursor:pointer;letter-spacing:.06em;font-size:.48rem;color:var(--accent);text-transform:uppercase;writing-mode:horizontal-tb;text-align:center;line-height:1.2" title="Tippen: Ziel wechseln — PITCH · VEL · MOD · VOL">PITCH</label>
-          <div id="pitchBendTrack" style="width:26px;flex:1;min-height:60px;background:var(--border);border-radius:13px;position:relative;cursor:ns-resize;border:1px solid var(--dim)">
-            <div id="pitchBendThumb" style="position:absolute;left:50%;transform:translate(-50%,-50%);top:50%;width:20px;height:20px;background:var(--accent);border-radius:50%;box-shadow:var(--glow)"></div>
+          <div id="pitchBendTrack" style="width:52px;flex:1;min-height:60px;background:var(--border);border-radius:13px;position:relative;cursor:ns-resize;border:1px solid var(--dim)">
+            <div id="pitchBendThumb" style="position:absolute;left:50%;transform:translate(-50%,-50%);top:50%;width:36px;height:36px;background:var(--accent);border-radius:50%;box-shadow:var(--glow)"></div>
             <div style="position:absolute;left:0;right:0;top:50%;height:1px;background:var(--dim);pointer-events:none"></div>
           </div>
           <div id="pitchBendVal" style="font-family:'Share Tech Mono',monospace;font-size:.48rem;color:var(--accent);text-align:center">0</div>
@@ -1333,10 +1334,10 @@ input[type=range]::-moz-range-track{height:6px;background:inherit;border-radius:
       <div class="kb-scroll" id="kbScroll2" style="flex:1">
         <div class="keyboard" id="keyboard2"></div>
       </div>
-      <div id="pitchBendSidebar2" style="width:40px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:3px;border-left:1px solid var(--border);padding:4px 2px;touch-action:none;user-select:none;background:var(--panel);flex-shrink:0">
+      <div id="pitchBendSidebar2" style="width:80px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:3px;border-left:1px solid var(--border);padding:4px 2px;touch-action:none;user-select:none;background:var(--panel);flex-shrink:0">
           <label id="pitchBendLabel2" style="cursor:pointer;letter-spacing:.06em;font-size:.48rem;color:var(--accent);text-transform:uppercase;writing-mode:horizontal-tb;text-align:center;line-height:1.2" title="Tippen: Ziel wechseln — PITCH · VEL · MOD · VOL">PITCH</label>
-          <div id="pitchBendTrack2" style="width:26px;flex:1;min-height:60px;background:var(--border);border-radius:13px;position:relative;cursor:ns-resize;border:1px solid var(--dim)">
-            <div id="pitchBendThumb2" style="position:absolute;left:50%;transform:translate(-50%,-50%);top:50%;width:20px;height:20px;background:var(--accent);border-radius:50%;box-shadow:var(--glow)"></div>
+          <div id="pitchBendTrack2" style="width:52px;flex:1;min-height:60px;background:var(--border);border-radius:13px;position:relative;cursor:ns-resize;border:1px solid var(--dim)">
+            <div id="pitchBendThumb2" style="position:absolute;left:50%;transform:translate(-50%,-50%);top:50%;width:36px;height:36px;background:var(--accent);border-radius:50%;box-shadow:var(--glow)"></div>
             <div style="position:absolute;left:0;right:0;top:50%;height:1px;background:var(--dim);pointer-events:none"></div>
           </div>
           <div id="pitchBendVal2" style="font-family:'Share Tech Mono',monospace;font-size:.48rem;color:var(--accent);text-align:center">0</div>
@@ -1513,9 +1514,21 @@ import { SoundBankLoader } from "spessasynth_core";
 
 // --- MOBILE DEBUGGER ---
 const debugDiv = document.createElement('div');
-debugDiv.style = "display:none;width:100%;background:rgba(0,0,0,0.8);color:#0f0;font-size:10px;overflow-y:auto;z-index:9999;pointer-events:none;font-family:monospace;padding:5px;border-top:1px solid #0f0;margin-top:8px;";
-// Am Ende des Body anhängen (nach dem Laden)
-window.addEventListener('DOMContentLoaded', () => document.body.appendChild(debugDiv));
+debugDiv.style = "display:none;width:100%;background:rgba(0,0,0,0.9);color:#0f0;font-size:10px;overflow-y:auto;max-height:200px;z-index:9999;pointer-events:auto;font-family:monospace;padding:5px;border-top:1px solid #0f0;margin-top:8px;";
+window.addEventListener('DOMContentLoaded', () => {
+  document.body.appendChild(debugDiv);
+  const btn = document.getElementById('debugToggleBtn');
+  if (btn) {
+    btn.addEventListener('click', () => {
+      const on = debugDiv.style.display === 'none';
+      debugDiv.style.display = on ? 'block' : 'none';
+      btn.textContent = on ? '🐛 Debug: AN' : '🐛 Debug: AUS';
+      btn.style.color = on ? 'var(--accent2)' : '';
+      btn.style.borderColor = on ? 'var(--accent2)' : '';
+      if (on) debugDiv.scrollTop = debugDiv.scrollHeight;
+    });
+  }
+});
 
 window.onerror = (msg, url, line) => {
     debugDiv.innerHTML += `<div style="color:red">ERR: ${msg} (L:${line})</div>`;
@@ -1528,19 +1541,14 @@ window.addEventListener('unhandledrejection', e => {
 
 console.log = (...args) => {
     debugDiv.innerHTML += `<div>LOG: ${args.join(' ')}</div>`;
-    debugDiv.scrollTop = debugDiv.scrollHeight;
+    if (debugDiv.style.display !== 'none') debugDiv.scrollTop = debugDiv.scrollHeight;
 };
 // -----------------------
 
 console.log("Script geladen, SpessaSynth importiert!");
 console.log("CHECKPOINT 1: Modul gestartet");
 
-// Build-Info aus Vite-Injection anzeigen
-try {
-  const bt = typeof __BUILD_TIME__ !== 'undefined' ? __BUILD_TIME__ : null;
-  const el = document.getElementById('buildVersion');
-  if (el && bt) el.textContent = bt;
-} catch(e) {}
+// Build-Zeit wird nicht mehr im Header angezeigt (nur noch "by c. kirste")
 
 
 // Always start at top — prevent browser scroll restoration
@@ -2375,17 +2383,18 @@ async ensureCtx() {
     if (!sf || !sf.presets[presetIdx]) return;
     const p = sf.presets[presetIdx];
 
-    // Cache-Key: wenn gleicher Preset auf gleichem Channel → nichts tun.
-    // Das verhindert redundante programChange-Aufrufe bei Akkorden (Full Orchestra etc.)
     const cacheKey = `${sf.sfId}:${p.bank}:${p.bankLSB ?? 0}:${p.program}`;
     if (this._chProgKey.get(ch) === cacheKey) return;
     this._chProgKey.set(ch, cacheKey);
 
     try {
+      // priorityOrder nur setzen wenn diese SF nicht schon vorne steht
       if (sf.sfId && this.synth.soundBankManager) {
-        const current = [...this.synth.soundBankManager.priorityOrder];
-        const reordered = [sf.sfId, ...current.filter(id => id !== sf.sfId)];
-        this.synth.soundBankManager.priorityOrder = reordered;
+        const current = this.synth.soundBankManager.priorityOrder;
+        if (current[0] !== sf.sfId) {
+          this.synth.soundBankManager.priorityOrder =
+            [sf.sfId, ...current.filter(id => id !== sf.sfId)];
+        }
       }
       this.synth.controllerChange(ch, 0,  p.bank   ?? 0);
       this.synth.controllerChange(ch, 32, p.bankLSB ?? 0);
@@ -2426,15 +2435,19 @@ async ensureCtx() {
   }
 
   _applyReverbSize(size) {
-    // v4: setReverbResponse() existiert nicht mehr.
-    // Reverb-Zeit wird über einen GS-SysEx-Befehl gesetzt (XG Reverb Time, 0–127).
-    // size: 0.3–6.0 s → linear auf 0–127 mappen
+    // GS SysEx für Reverb Time: F0 41 10 42 12 40 01 34 tt cs F7
+    // addr1=0x40, addr2=0x01, addr3=0x34 (52) = Reverb Time, 0–127
+    // size: 0.3–6.0 (Sekunden vom Slider) → 0–127
     if (!this.synth) return;
     try {
       const time = Math.round(Math.min(127, Math.max(0, (size - 0.3) / 5.7 * 127)));
-      // XG SysEx: F0 43 10 4C 02 01 21 tt F7  (Reverb Time)
-      this.synth.systemExclusive([0x43, 0x10, 0x4C, 0x02, 0x01, 0x21, time, 0xF7]);
-    } catch(e) { console.warn('_applyReverbSize SysEx error:', e); }
+      // Roland GS Checksum: 128 - ((addr1+addr2+addr3+data) & 0x7F)
+      const cs = (128 - ((0x40 + 0x01 + 0x34 + time) & 0x7F)) & 0x7F;
+      // F0 41 10 42 12  40 01 34  tt  cs  F7
+      this.synth.systemExclusive(
+        [0x41, 0x10, 0x42, 0x12, 0x40, 0x01, 0x34, time, cs, 0xF7]
+      );
+    } catch(e) { console.warn('_applyReverbSize error:', e); }
   }
 
   setChorus(wet) {
@@ -5347,15 +5360,28 @@ document.getElementById('panicNavBtn')?.addEventListener('click', doPanic);
     step();
   }
 
+  let activeTouchId = null; // Touch-Identifier des aktiven Drags
+
   function getTrackY(trackEl, e) {
     const rect = trackEl.getBoundingClientRect();
-    const clientY = e.touches ? e.touches[0].clientY : e.clientY;
+    // Bei Touch: den eigenen Finger per ID finden, nicht einfach touches[0]
+    let clientY;
+    if (e.touches) {
+      const touch = activeTouchId !== null
+        ? [...e.touches].find(t => t.identifier === activeTouchId) || e.touches[0]
+        : e.touches[0];
+      clientY = touch.clientY;
+    } else {
+      clientY = e.clientY;
+    }
     return (clientY - rect.top) / rect.height;
   }
 
   function onStart(trackEl, e) {
     e.preventDefault();
+    e.stopPropagation();
     dragging = trackEl;
+    if (e.touches) activeTouchId = e.touches[0].identifier;
     clearTimeout(springTimer);
     startY   = getTrackY(trackEl, e);
     startPct = currentPct;
@@ -5370,8 +5396,14 @@ document.getElementById('panicNavBtn')?.addEventListener('click', doPanic);
     sendValue(currentPct);
   }
   function onEnd(e) {
+    // Bei Touch: nur beenden wenn unser Finger losgelassen wurde
+    if (e.changedTouches && activeTouchId !== null) {
+      const released = [...e.changedTouches].some(t => t.identifier === activeTouchId);
+      if (!released) return;
+    }
     if (!dragging) return;
     dragging = null;
+    activeTouchId = null;
     PAIRS.forEach(p => p.thumb.style.transition = '');
     springBack();
   }
