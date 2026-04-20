@@ -1510,7 +1510,6 @@ input[type=range]::-moz-range-track{height:6px;background:inherit;border-radius:
 
 <script type="module">
 import { WorkletSynthesizer, audioBufferToWav } from "spessasynth_lib";
-import { SoundBankLoader } from "spessasynth_core";
 
 // --- MOBILE DEBUGGER ---
 const debugDiv = document.createElement('div');
@@ -2105,56 +2104,37 @@ async ensureCtx() {
     }
 
     // v4: addSoundBank transferiert den Buffer in den Worker-Thread (Zero-Copy).
-    // Damit der Aufrufer seinen Buffer-Verweis behält (z.B. für IndexedDB-Cache),
-    // übergeben wir eine Kopie. SpessaSynth detacht diese Kopie, nicht das Original.
     const sfId = `sf_${Date.now()}`;
     try {
-      // Schritt 1: SF2 auf dem Main Thread parsen — nur für die Preset-Metadaten.
-      // SoundBankLoader.fromArrayBuffer() ist synchron und läuft NICHT im Worklet.
-      // Das ist keine zweite Synthesizer-Instanz → kein Performance-Problem.
-      let parsedPresets = [];
-      try {
-        const bank = SoundBankLoader.fromArrayBuffer(arrayBuffer.slice(0));
-        parsedPresets = (bank.presets ?? []).map((p, i) => ({
-          name:    p.name       ?? ('Preset ' + i),
-          program: p.program    ?? i,
-          bank:    p.bankMSB    ?? 0,
-          bankLSB: p.bankLSB    ?? 0,
-          isDrum:  !!(p.isAnyDrums || p.isGMGSDrum || (p.bankMSB === 128)),
-          zones:   [],
-        }));
-        // Ressourcen freigeben
-        if (typeof bank.destroySoundBank === 'function') bank.destroySoundBank();
-        console.log(`SoundBankLoader: ${parsedPresets.length} Presets für ${sfId}`);
-      } catch(parseErr) {
-        console.warn('SoundBankLoader Fallback auf presetList-Diff:', parseErr.message);
-      }
+      // Schritt 1: presetList VOR dem Laden — für den Diff danach
+      const preListBefore = new Set(
+        (this.synth.presetList ?? []).map(p => `${p.program}:${p.bankMSB}:${p.bankLSB}:${p.name}`)
+      );
 
-      // Schritt 2: Buffer in den Worklet transferieren (Zero-Copy-Kopie)
-      const preListBefore = parsedPresets.length === 0
-        ? (this.synth.presetList ?? []).map(p => `${p.program}:${p.bankMSB}:${p.bankLSB}`)
-        : null;
-
+      // Schritt 2: SF2 in den Worklet laden
       await this.synth.soundBankManager.addSoundBank(arrayBuffer.slice(0), sfId);
-      console.log('SF2 Worklet geladen:', sfId, 'total presetList:', this.synth.presetList?.length);
+      console.log('SF2 Worklet geladen:', sfId, 'presetList:', this.synth.presetList?.length);
       arrayBuffer = null;
 
-      // Falls SoundBankLoader fehlschlug: Diff-Fallback
-      if (parsedPresets.length === 0 && preListBefore) {
-        const beforeSet = new Set(preListBefore);
-        const newRaw = (this.synth.presetList ?? [])
-          .filter(p => !beforeSet.has(`${p.program}:${p.bankMSB}:${p.bankLSB}`));
-        parsedPresets = (newRaw.length > 0 ? newRaw : this.synth.presetList ?? [])
-          .map((p, i) => ({
-            name:    p.name       ?? ('Preset ' + i),
-            program: p.program    ?? i,
-            bank:    p.bankMSB    ?? 0,
-            bankLSB: p.bankLSB    ?? 0,
-            isDrum:  !!(p.isAnyDrums || p.isGMGSDrum || (p.bankMSB === 128)),
-            zones:   [],
-          }));
-        console.log(`Diff-Fallback: ${parsedPresets.length} Presets`);
-      }
+      // Schritt 3: Neue Presets aus der Worklet-presetList ermitteln (Diff).
+      // Die Worklet-presetList enthält die EXAKTEN bankMSB/bankLSB-Werte die
+      // SpessaSynth intern verwendet — diese müssen wir für programChange senden.
+      const afterList = this.synth.presetList ?? [];
+      let newPresets = afterList.filter(
+        p => !preListBefore.has(`${p.program}:${p.bankMSB}:${p.bankLSB}:${p.name}`)
+      );
+      // Fallback: wenn Diff leer (z.B. selbe SF nochmal), alle nehmen
+      if (newPresets.length === 0) newPresets = afterList;
+      console.log(`Presets für ${sfId}: ${newPresets.length}`);
+
+      const parsedPresets = newPresets.map((p, i) => ({
+        name:    p.name       ?? ('Preset ' + i),
+        program: p.program    ?? i,
+        bank:    p.bankMSB    ?? 0,   // exakter Wert aus Worklet
+        bankLSB: p.bankLSB    ?? 0,   // exakter Wert aus Worklet
+        isDrum:  !!(p.isAnyDrums || p.isGMGSDrum),
+        zones:   [],
+      }));
 
       this._sfPresetCache = this._sfPresetCache || new Map();
       this._sfPresetCache.set(sfId, parsedPresets);
@@ -2193,11 +2173,11 @@ async ensureCtx() {
         return this._buildPresetListFallback();
       }
       const list = raw.map((p, i) => ({
-        name:    p.name       ?? ('Preset ' + i),
-        program: p.program    ?? i,
-        bank:    p.bankMSB    ?? 0,
-        bankLSB: p.bankLSB    ?? 0,
-        isDrum:  !!(p.isAnyDrums || p.isGMGSDrum || (p.bankMSB === 128)),
+        name:    p.name    ?? p.presetName ?? ('Preset ' + i),
+        program: p.program ?? i,
+        bank:    p.bank    ?? p.bankMSB ?? 0,   // raw hat 'bank' (aus dem Diff-Cache)
+        bankLSB: p.bankLSB ?? 0,
+        isDrum:  !!(p.isDrum || p.isAnyDrums || p.isGMGSDrum),
         zones:   [],
       }));
       // Sortierung: Bank 0 (GM-Melodie) zuerst nach Program,
