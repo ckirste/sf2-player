@@ -999,7 +999,7 @@ input[type=range]::-moz-range-track{height:6px;background:inherit;border-radius:
 
   <div class="header">
     <button class="fs-toggle" id="fsToggleBtn" title="Vollbild ein/aus">⛶</button>
-    <h1>Ensemble_v40</h1>
+    <h1>Ensemble_v41</h1>
     <div class="sub">by c. kirste</div>
     <button class="settings-toggle" id="settingsToggle" title="Erscheinungsbild anpassen">⚙</button>
   </div>
@@ -1981,11 +1981,25 @@ class SF2Parser {
 class AudioEngine {
   constructor() {
     this.ctx          = null;
-    this.synth        = null;
     this.masterGain   = null;
-    this.soundfonts   = [];
-    this.voices       = new Map();
-    this.layerNodes   = new Map();
+    // Effekte-Kette
+    this.eqLowNode    = null;
+    this.eqMidNode    = null;
+    this.eqHighNode   = null;
+    this.delayNode    = null;
+    this.delayFeedback= null;
+    this.delayWetGain = null;
+    this.delayDryGain = null;
+    this.filterNode   = null;
+
+    // ── Multi-Synth: eine WorkletSynthesizer-Instanz pro SF2 ──────
+    // Jedes sfObj = { synth, name, sfId, presets, channels, nextCh, chProgKey, ready }
+    this.synths       = [];
+    // Alias: UI-Code greift weiterhin per engine.soundfonts[sfIdx] zu
+    this.soundfonts   = this.synths;
+
+    this.voices       = new Map(); // key → { ch, midi, sfIdx }
+
     this._vol         = 0.75;
     this._reverbWet   = 0;
     this._reverbSize  = 0.5;
@@ -1994,344 +2008,291 @@ class AudioEngine {
     this._eqLow       = 0;
     this._eqMid       = 0;
     this._eqHigh      = 0;
-    this._spessaReady = false;
-    this._pendingLoad = [];
-    this._channels    = new Map(); // layerId_sfIdx_presetIdx → ch
-    this._nextCh      = 0;
-    // Per-channel Programm-Cache: ch → "sfId:bank:bankLSB:program"
-    // Verhindert redundante programChange-Messages bei Akkorden (z.B. Full Orchestra)
-    this._chProgKey   = new Map();
-    // Per-channel WaveShapers für Saturation/Buzz (ch → {shaper, wetGain})
-    this._channelSaturators = new Map();
+
+    this._workletReady       = false; // addModule() wurde einmalig geladen
+    this._channelSaturators  = new Map(); // `${sfIdx}_${ch}` → {shaper, wetGain}
   }
 
-  // ── Init SpessaSynth ─────────────────────────────────────────
+  // ── Compat-Getter: engine.synth → erste Instanz ───────────────
+  get synth()     { return this.synths[0]?.synth ?? null; }
+  getSynthFor(si) { return this.synths[si]?.synth  ?? null; }
+  get allSynths() { return this.synths.map(s => s.synth).filter(Boolean); }
 
-async ensureCtx() {
-    if (this.ctx && this._spessaReady) return;
+  // ── AudioContext + Worklet-Modul einmalig initialisieren ──────
+  async ensureCtx() {
+    if (this.ctx && this._workletReady) return;
 
-    // 1. AudioContext & Master Gain erstellen (falls noch nicht da)
     if (!this.ctx) {
-        this.ctx = new (window.AudioContext || window.webkitAudioContext)();
-        this.masterGain = this.ctx.createGain();
-        this.masterGain.gain.value = 1.0; // Unity — Lautstärke nur über SpessaSynth setMainVolume
+      this.ctx = new (window.AudioContext || window.webkitAudioContext)();
+      this.masterGain = this.ctx.createGain();
+      this.masterGain.gain.value = 1.0;
 
-        // ── Effekte-Kette: masterGain → EQ → Delay → Filter → destination ──
-        const ctx = this.ctx;
+      // EQ (3-Band)
+      this.eqLowNode  = this.ctx.createBiquadFilter();
+      this.eqLowNode.type = 'lowshelf'; this.eqLowNode.frequency.value = 250;
+      this.eqMidNode  = this.ctx.createBiquadFilter();
+      this.eqMidNode.type = 'peaking'; this.eqMidNode.frequency.value = 1200; this.eqMidNode.Q.value = 1.2;
+      this.eqHighNode = this.ctx.createBiquadFilter();
+      this.eqHighNode.type = 'highshelf'; this.eqHighNode.frequency.value = 4000;
 
-        // EQ (3-Band)
-        this.eqLowNode  = ctx.createBiquadFilter();
-        this.eqLowNode.type = 'lowshelf';
-        this.eqLowNode.frequency.value = 250;
-        this.eqLowNode.gain.value = 0;
+      // Delay
+      this.delayNode      = this.ctx.createDelay(2.0); this.delayNode.delayTime.value = 0.35;
+      this.delayFeedback  = this.ctx.createGain();      this.delayFeedback.gain.value  = 0.35;
+      this.delayWetGain   = this.ctx.createGain();      this.delayWetGain.gain.value   = 0;
+      this.delayDryGain   = this.ctx.createGain();      this.delayDryGain.gain.value   = 1;
 
-        this.eqMidNode  = ctx.createBiquadFilter();
-        this.eqMidNode.type = 'peaking';
-        this.eqMidNode.frequency.value = 1200;
-        this.eqMidNode.Q.value = 1.2;
-        this.eqMidNode.gain.value = 0;
+      // Filter
+      this.filterNode = this.ctx.createBiquadFilter();
+      this.filterNode.type = 'lowpass'; this.filterNode.frequency.value = 20000;
 
-        this.eqHighNode = ctx.createBiquadFilter();
-        this.eqHighNode.type = 'highshelf';
-        this.eqHighNode.frequency.value = 4000;
-        this.eqHighNode.gain.value = 0;
-
-        // Delay
-        this.delayNode    = ctx.createDelay(2.0);
-        this.delayNode.delayTime.value = 0.35;
-        this.delayFeedback = ctx.createGain();
-        this.delayFeedback.gain.value = 0.35;
-        this.delayWetGain = ctx.createGain();
-        this.delayWetGain.gain.value = 0;
-        this.delayDryGain = ctx.createGain();
-        this.delayDryGain.gain.value = 1;
-
-        // Filter
-        this.filterNode = ctx.createBiquadFilter();
-        this.filterNode.type = 'lowpass';
-        this.filterNode.frequency.value = 20000;
-
-        // Verbindungen: masterGain → EQ → delay split → filter → destination
-        this.masterGain.connect(this.eqLowNode);
-        this.eqLowNode.connect(this.eqMidNode);
-        this.eqMidNode.connect(this.eqHighNode);
-
-        // Delay (parallel: dry + wet)
-        this.eqHighNode.connect(this.delayDryGain);
-        this.eqHighNode.connect(this.delayNode);
-        this.delayNode.connect(this.delayFeedback);
-        this.delayFeedback.connect(this.delayNode);
-        this.delayNode.connect(this.delayWetGain);
-        this.delayDryGain.connect(this.filterNode);
-        this.delayWetGain.connect(this.filterNode);
-
-        this.filterNode.connect(ctx.destination);
+      // masterGain → EQ → Delay-Split → Filter → destination
+      this.masterGain.connect(this.eqLowNode);
+      this.eqLowNode.connect(this.eqMidNode);
+      this.eqMidNode.connect(this.eqHighNode);
+      this.eqHighNode.connect(this.delayDryGain);
+      this.eqHighNode.connect(this.delayNode);
+      this.delayNode.connect(this.delayFeedback);
+      this.delayFeedback.connect(this.delayNode);
+      this.delayNode.connect(this.delayWetGain);
+      this.delayDryGain.connect(this.filterNode);
+      this.delayWetGain.connect(this.filterNode);
+      this.filterNode.connect(this.ctx.destination);
     }
 
-    if (!this._spessaReady) {
-        try {
-            // v4: Worklet-Datei heißt spessasynth_processor.min.js
-            await this.ctx.audioWorklet.addModule('./spessasynth_processor.min.js');
-
-            // v4: Synth wird hier erstellt (kein SF2-Buffer im Konstruktor mehr)
-            this.synth = new WorkletSynthesizer(this.ctx, { enableEventSystem: false });
-            // Synth-Ausgang in unsere Effektkette einhängen
-            this.synth.connect(this.masterGain);
-            // Warten bis Worklet vollständig initialisiert
-            await this.synth.isReady;
-
-            this._spessaReady = true;
-            console.log("SpessaSynth v4 bereit, warte auf SF2…");
-
-            if (window._pendingFxApply) {
-                window._pendingFxApply();
-                window._pendingFxApply = null;
-            }
-        } catch (e) {
-            console.error('SpessaSynth Setup fehlgeschlagen:', e);
-            throw new Error('Fehler beim Initialisieren der Audio-Engine.');
-        }
+    if (!this._workletReady) {
+      await this.ctx.audioWorklet.addModule('./spessasynth_processor.min.js');
+      this._workletReady = true;
+      console.log('SpessaSynth Worklet-Modul geladen');
+      if (window._pendingFxApply) { window._pendingFxApply(); window._pendingFxApply = null; }
     }
 
-    // AudioContext reaktivieren (User-Interaktion erforderlich)
-    if (this.ctx.state === 'suspended') {
-        await this.ctx.resume();
-    }
-}
+    if (this.ctx.state === 'suspended') await this.ctx.resume();
+  }
 
-
-  // ── Load SF2 ─────────────────────────────────────────────────
+  // ── SF2 laden: erzeugt eine eigene Synth-Instanz ──────────────
   async load(arrayBuffer, name, onProgress) {
     onProgress('SF2 wird gelesen…', 10);
     await this.ensureCtx();
 
-    onProgress('SpessaSynth lädt SF2…', 40);
+    onProgress('Neuer Synthesizer wird initialisiert…', 30);
+
+    // Eigene WorkletSynthesizer-Instanz pro SF2
+    const synth = new WorkletSynthesizer(this.ctx, { enableEventSystem: false });
+    synth.connect(this.masterGain);
+    await synth.isReady;
+
+    const sfId = `sf_${Date.now()}`;
 
     const sfSizeMB = arrayBuffer.byteLength / 1048576;
-    if (sfSizeMB > 300) {
-      onProgress(`Große SF2 (${sfSizeMB.toFixed(0)}MB) — bitte warten…`, 35);
-    }
+    if (sfSizeMB > 300) onProgress(`Große SF2 (${sfSizeMB.toFixed(0)}MB) — bitte warten…`, 35);
 
-    // v4: addSoundBank transferiert den Buffer in den Worker-Thread (Zero-Copy).
-    const sfId = `sf_${Date.now()}`;
-    try {
-      // Schritt 1: presetList VOR dem Laden — für den Diff danach
-      const preListBefore = new Set(
-        (this.synth.presetList ?? []).map(p => `${p.program}:${p.bankMSB}:${p.bankLSB}:${p.name}`)
-      );
+    onProgress('SF2 wird in Worklet geladen…', 50);
+    await synth.soundBankManager.addSoundBank(arrayBuffer.slice(0), sfId);
+    arrayBuffer = null;
 
-      // Schritt 2: SF2 in den Worklet laden
-      await this.synth.soundBankManager.addSoundBank(arrayBuffer.slice(0), sfId);
-      console.log('SF2 Worklet geladen:', sfId, 'presetList:', this.synth.presetList?.length);
-      arrayBuffer = null;
+    onProgress('Presets werden gelesen…', 80);
 
-      // Schritt 3: Neue Presets aus der Worklet-presetList ermitteln (Diff).
-      // Die Worklet-presetList enthält die EXAKTEN bankMSB/bankLSB-Werte die
-      // SpessaSynth intern verwendet — diese müssen wir für programChange senden.
-      const afterList = this.synth.presetList ?? [];
-      let newPresets = afterList.filter(
-        p => !preListBefore.has(`${p.program}:${p.bankMSB}:${p.bankLSB}:${p.name}`)
-      );
-      // Fallback: wenn Diff leer (z.B. selbe SF nochmal), alle nehmen
-      if (newPresets.length === 0) newPresets = afterList;
-      console.log(`Presets für ${sfId}: ${newPresets.length}`);
+    // presetList direkt von dieser Instanz — kein Diff nötig!
+    const rawPresets = synth.presetList ?? [];
+    console.log(`SF2 "${name}" geladen: ${rawPresets.length} Presets`);
 
-      const parsedPresets = newPresets.map((p, i) => ({
-        name:    p.name       ?? ('Preset ' + i),
-        program: p.program    ?? i,
-        bank:    p.bankMSB    ?? 0,   // exakter Wert aus Worklet
-        bankLSB: p.bankLSB    ?? 0,   // exakter Wert aus Worklet
-        isDrum:  !!(p.isAnyDrums || p.isGMGSDrum),
-        zones:   [],
-      }));
+    const presets = this._buildPresetList(rawPresets);
 
-      this._sfPresetCache = this._sfPresetCache || new Map();
-      this._sfPresetCache.set(sfId, parsedPresets);
-    } catch(e) {
-      throw new Error('SF2 Ladefehler: ' + e.message);
-    }
-
-    onProgress('Presets werden gelesen…', 90);
-
-    // v4: Presets pro Bank aus soundBankManager holen — nicht die globale Merge-Liste.
-    // Jede SF bekommt so exklusiv ihre eigenen Presets.
-    const sfIdx = this.soundfonts.length;
-    const presets = this._buildPresetListForId(sfId);
-
-    this.soundfonts.push({
+    const sfObj = {
+      synth,
       name,
       sfId,
       presets,
-      expandedZones: new Array(presets.length).fill(null),
-      bufferCache:   new Map(),
-      parser:        null,
-    });
+      // Jede Instanz verwaltet ihre eigenen MIDI-Channels (0–15)
+      channels:  new Map(), // `${layerId}_${presetIdx}` → ch
+      nextCh:    0,
+      chProgKey: new Map(), // ch → cacheKey (verhindert redundante programChange)
+      ready:     true,
+    };
+
+    this.synths.push(sfObj);
+    const sfIdx = this.synths.length - 1;
+
+    // Lautstärke + Effekte sofort synchronisieren
+    try { synth.setMasterParameter('masterGain', this._vol); } catch(e) {}
+    this._applyEffectsGainTo(synth);
 
     onProgress('Fertig!', 100);
     return { sfIdx, presets };
   }
 
-  // Baut die Preset-Liste für eine einzelne SF2 anhand ihrer sfId.
-  // v4: soundBankManager.soundBankList[i].soundBank.presets enthält die
-  // Presets exklusiv dieser Bank — nicht die globale Merge-Liste.
-  _buildPresetListForId(sfId) {
-    try {
-      const raw = (this._sfPresetCache && this._sfPresetCache.get(sfId)) ?? [];
-      if (raw.length === 0) {
-        console.warn('_buildPresetListForId: kein Cache für', sfId, '— Fallback');
-        return this._buildPresetListFallback();
-      }
-      const list = raw.map((p, i) => ({
-        name:    p.name    ?? p.presetName ?? ('Preset ' + i),
-        program: p.program ?? i,
-        bank:    p.bank    ?? p.bankMSB ?? 0,   // raw hat 'bank' (aus dem Diff-Cache)
-        bankLSB: p.bankLSB ?? 0,
-        isDrum:  !!(p.isDrum || p.isAnyDrums || p.isGMGSDrum),
-        zones:   [],
-      }));
-      // Sortierung: Bank 0 (GM-Melodie) zuerst nach Program,
-      // dann Drums (isDrum / bank 128), dann alle Variation-Banks 1-127
-      list.sort((a, b) => {
-        const aGM   = a.bank === 0 && !a.isDrum;
-        const bGM   = b.bank === 0 && !b.isDrum;
-        const aDrum = !!(a.isDrum || a.isGMGSDrum);
-        const bDrum = !!(b.isDrum || b.isGMGSDrum);
-        if (aGM   && !bGM)   return -1;  // Bank-0 immer zuerst
-        if (!aGM  && bGM)    return  1;
-        if (aDrum && !bDrum) return -1;  // Drums vor Variationen
-        if (!aDrum && bDrum) return  1;
-        if (a.bank !== b.bank) return a.bank - b.bank;
-        return a.program - b.program;
-      });
-      return list;
-    } catch(e) {
-      console.warn('_buildPresetListForId error:', e);
-      return this._buildPresetListFallback();
-    }
+  _buildPresetList(rawPresets) {
+    const list = rawPresets.map((p, i) => ({
+      name:    p.name       ?? ('Preset ' + i),
+      program: p.program    ?? i,
+      bank:    p.bankMSB    ?? 0,
+      bankLSB: p.bankLSB    ?? 0,
+      isDrum:  !!(p.isAnyDrums || p.isGMGSDrum),
+      zones:   [],
+    }));
+    list.sort((a, b) => {
+      const aGM   = a.bank === 0 && !a.isDrum;
+      const bGM   = b.bank === 0 && !b.isDrum;
+      const aDrum = a.isDrum, bDrum = b.isDrum;
+      if (aGM   && !bGM)   return -1;
+      if (!aGM  && bGM)    return  1;
+      if (aDrum && !bDrum) return -1;
+      if (!aDrum && bDrum) return  1;
+      if (a.bank !== b.bank) return a.bank - b.bank;
+      return a.program - b.program;
+    });
+    return list;
   }
 
-  // Fallback: globale Merge-Liste (wie bisher)
-  _buildPresetList() { return this._buildPresetListFallback(); }
-  _buildPresetListFallback() {
-    try {
-      const rawPresets = this.synth.presetList ?? [];
-      const list = rawPresets.map((p, i) => ({
-        name:    p.name       ?? ('Preset ' + i),
-        program: p.program    ?? i,
-        bank:    p.bankMSB    ?? 0,
-        bankLSB: p.bankLSB    ?? 0,
-        isDrum:  !!(p.isAnyDrums || p.isGMGSDrum || (p.bankMSB === 128)),
-        zones:   [],
-      }));
-      list.sort((a, b) => {
-        const aGM   = a.bank === 0 && !a.isDrum;
-        const bGM   = b.bank === 0 && !b.isDrum;
-        const aDrum = !!(a.isDrum || a.isGMGSDrum);
-        const bDrum = !!(b.isDrum || b.isGMGSDrum);
-        if (aGM   && !bGM)   return -1;
-        if (!aGM  && bGM)    return  1;
-        if (aDrum && !bDrum) return -1;
-        if (!aDrum && bDrum) return  1;
-        if (a.bank !== b.bank) return a.bank - b.bank;
-        return a.program - b.program;
-      });
-      return list;
-    } catch(e) {
-      console.warn('Could not get preset list:', e);
-      return [];
-    }
+  // ── Channel-Verwaltung: pro Synth-Instanz ─────────────────────
+  _getChannel(layerId, sfIdx, presetIdx) {
+    const sfObj = this.synths[sfIdx];
+    if (!sfObj) return 0;
+
+    const key = `${layerId}_${presetIdx}`;
+    if (sfObj.channels.has(key)) return sfObj.channels.get(key);
+
+    let ch = sfObj.nextCh;
+    if (ch === 9) ch = 10;                  // CH9 = immer Drums → überspringen
+    sfObj.nextCh = (ch + 1) % 16;
+    if (sfObj.nextCh === 9) sfObj.nextCh = 10;
+    sfObj.channels.set(key, ch);
+
+    this._setProgramOnChannel(sfIdx, ch, presetIdx);
+    return ch;
   }
 
-  // ── Play Note ────────────────────────────────────────────────
-  // SpessaSynth works per MIDI channel — we assign one channel per layer
+  // Setzt Bank + Program auf einem Channel — ohne Race Condition,
+  // da jede Instanz nur eine SF2 kennt (kein priorityOrder nötig!).
+  _setProgramOnChannel(sfIdx, ch, presetIdx) {
+    const sfObj = this.synths[sfIdx];
+    if (!sfObj) return;
+    const p = sfObj.presets[presetIdx];
+    if (!p) return;
+
+    const cacheKey = `${p.bank}:${p.bankLSB ?? 0}:${p.program}`;
+    if (sfObj.chProgKey.get(ch) === cacheKey) return;
+    sfObj.chProgKey.set(ch, cacheKey);
+
+    try {
+      sfObj.synth.controllerChange(ch, 0,  p.bank   ?? 0);
+      sfObj.synth.controllerChange(ch, 32, p.bankLSB ?? 0);
+      sfObj.synth.programChange(ch, p.program);
+    } catch(e) { console.warn('_setProgramOnChannel error:', e); }
+  }
+
+  ensureChannel(layerId, sfIdx, presetIdx) {
+    return this._getChannel(layerId, sfIdx, presetIdx);
+  }
+
+  resetChannel(layerId) {
+    this.synths.forEach(sfObj => {
+      [...sfObj.channels.entries()]
+        .filter(([k]) => k.startsWith(`${layerId}_`))
+        .forEach(([k, ch]) => {
+          sfObj.channels.delete(k);
+          sfObj.chProgKey.delete(ch);
+        });
+    });
+  }
+
+  // Gibt alle Channels + Synth-Referenzen für einen Layer zurück
+  getLayerChannels(layerId) {
+    const result = [];
+    this.synths.forEach((sfObj, sfIdx) => {
+      sfObj.channels.forEach((ch, k) => {
+        if (k.startsWith(String(layerId) + '_'))
+          result.push({ ch, sfIdx, synth: sfObj.synth });
+      });
+    });
+    return result;
+  }
+
+  // ── Play / Stop ───────────────────────────────────────────────
   playSync(midi, layerId, sfIdx, presetIdx, vel, layerVol, startT, envOverride) {
-    if (!this.synth || !this._spessaReady) return;
-
-    const sf = this.soundfonts[sfIdx];
-    if (!sf) return;
+    const sfObj = this.synths[sfIdx];
+    if (!sfObj || !sfObj.ready) return;
 
     const ch = this._getChannel(layerId, sfIdx, presetIdx);
+    this._setProgramOnChannel(sfIdx, ch, presetIdx);
 
-    // Vor jedem noteOn: priorityOrder + programChange aktualisieren.
-    // Das verhindert Race Conditions wenn mehrere Layer verschiedene SF2s nutzen.
-    this._setProgramOnChannel(ch, sfIdx, presetIdx);
+    sfObj.synth.controllerChange(ch, 7, Math.round(Math.min(127, layerVol * 127)));
 
-    // Volume via CC7
-    const ccVol = Math.round(Math.min(127, layerVol * 127));
-    this.synth.controllerChange(ch, 7, ccVol);
-
-    // ADSR-Override via MIDI CCs (CC73=Attack, CC72=Release, CC64=Sustain)
     if (envOverride && Object.keys(envOverride).length) {
       try {
         if (envOverride.attack != null) {
           const v = Math.round(Math.min(127, Math.max(0, Math.log(envOverride.attack / 0.002 + 1) / Math.log(4001) * 127)));
-          this.synth.controllerChange(ch, 73, v);
+          sfObj.synth.controllerChange(ch, 73, v);
         }
         if (envOverride.release != null) {
           const v = Math.round(Math.min(127, Math.max(0, Math.log(envOverride.release / 0.02 + 1) / Math.log(601) * 127)));
-          this.synth.controllerChange(ch, 72, v);
+          sfObj.synth.controllerChange(ch, 72, v);
         }
-        // CC64 (Sustain-Pedal) NICHT setzen — würde noteOff blockieren!
       } catch(e) {}
     }
 
-    this.synth.noteOn(ch, midi, vel);
+    sfObj.synth.noteOn(ch, midi, vel);
 
     const key = `${layerId}_${midi}_0`;
-    this.voices.set(key, { ch, midi, startT: startT ?? this.ctx.currentTime });
+    this.voices.set(key, { ch, midi, sfIdx, startT: startT ?? this.ctx.currentTime });
   }
 
-  // ── Stop Note ─────────────────────────────────────────────────
   stop(midi, layerId) {
-    if (!this.synth) return;
+    if (!this.synths.length) return;
     this._killAllVoicesForNote(layerId, midi);
   }
 
   _killAllVoicesForNote(layerId, midi) {
-    if (!this.synth) return;
+    if (!this.synths.length) return;
     const prefix = `${layerId}_${midi}`;
     let found = false;
     [...this.voices.keys()].filter(k => k.startsWith(prefix)).forEach(k => {
       const v = this.voices.get(k);
       if (v) {
-        // Sustain-Pedal zurücksetzen bevor noteOff!
-        try { this.synth.controllerChange(v.ch, 64, 0); } catch(e) {}
-        try { this.synth.noteOff(v.ch, v.midi); } catch(e) {}   // v4: kein 3. Argument
+        const sfObj = this.synths[v.sfIdx];
+        if (sfObj) {
+          try { sfObj.synth.controllerChange(v.ch, 64, 0); } catch(e) {}
+          try { sfObj.synth.noteOff(v.ch, v.midi); } catch(e) {}
+        }
         this.voices.delete(k);
         found = true;
       }
     });
-    // Fallback: noteOff auf allen Channels dieser Layer
+    // Fallback: alle Channels aller Synths
     if (!found) {
-      [...this._channels.entries()]
-        .filter(([k]) => k.startsWith(`${layerId}_`))
-        .forEach(([, ch]) => { try { this.synth.noteOff(ch, midi); } catch(e) {} });
+      this.synths.forEach(sfObj => {
+        [...sfObj.channels.entries()]
+          .filter(([k]) => k.startsWith(`${layerId}_`))
+          .forEach(([, ch]) => { try { sfObj.synth.noteOff(ch, midi); } catch(e) {} });
+      });
     }
   }
 
   stopMidi(midi) {
-    if (!this.synth) return;
-    const allChannels = new Set(this._channels.values());
+    if (!this.synths.length) return;
     [...this.voices.entries()]
       .filter(([k]) => k.includes(`_${midi}_`) || k.endsWith(`_${midi}`))
       .forEach(([k, v]) => {
-        try { this.synth.noteOff(v.ch, v.midi); } catch(e) {}   // v4: kein 3. Argument
+        const sfObj = this.synths[v.sfIdx];
+        if (sfObj) try { sfObj.synth.noteOff(v.ch, v.midi); } catch(e) {}
         this.voices.delete(k);
-        allChannels.delete(v.ch);
       });
-    // Fallback: noteOff auf verbleibenden Channels
-    allChannels.forEach(ch => { try { this.synth.noteOff(ch, midi); } catch(e) {} });
+    // Fallback: alle Channels aller Synths
+    this.synths.forEach(sfObj => {
+      for (let ch = 0; ch < 16; ch++) {
+        try { sfObj.synth.noteOff(ch, midi); } catch(e) {}
+      }
+    });
   }
 
   stopAll() {
-    if (!this.synth) return;
-    // SpessaSynth v3: stopAll(force=true) killt sofort alle Voices
-    try { this.synth.stopAll(true); } catch(e) {}
-    // Zusätzlich: CC123 (All Notes Off) auf allen Channels
-    for (let ch = 0; ch < 16; ch++) {
-      try { this.synth.controllerChange(ch, 123, 0); } catch(e) {}
-      try { this.synth.controllerChange(ch, 120, 0); } catch(e) {} // All Sound Off
-    }
+    this.synths.forEach(sfObj => {
+      try { sfObj.synth.stopAll(true); } catch(e) {}
+      for (let ch = 0; ch < 16; ch++) {
+        try { sfObj.synth.controllerChange(ch, 123, 0); } catch(e) {}
+        try { sfObj.synth.controllerChange(ch, 120, 0); } catch(e) {}
+      }
+    });
     this.voices.clear();
     if (typeof heldNotes !== 'undefined') heldNotes.clear();
     if (typeof layers !== 'undefined') {
@@ -2343,105 +2304,33 @@ async ensureCtx() {
     const v = this.voices.get(key);
     if (!v) return;
     this.voices.delete(key);
-    try { this.synth.noteOff(v.ch, v.midi); } catch(e) {}   // v4: kein 3. Argument
+    const sfObj = this.synths[v.sfIdx];
+    if (sfObj) try { sfObj.synth.noteOff(v.ch, v.midi); } catch(e) {}
   }
 
-  // ── Channel management ────────────────────────────────────────
-  // Each layer gets its own MIDI channel (0-15, skip 9=drums unless needed)
-  // _channels und _nextCh werden im constructor initialisiert
-
-  _getChannel(layerId, sfIdx, presetIdx) {
-    const key = `${layerId}_${sfIdx}_${presetIdx}`;
-    if (this._channels.has(key)) return this._channels.get(key);
-
-    let ch = this._nextCh;
-    if (ch === 9) ch = 10;
-    this._nextCh = (ch + 1) % 16;
-    if (this._nextCh === 9) this._nextCh = 10;
-    this._channels.set(key, ch);
-
-    this._setProgramOnChannel(ch, sfIdx, presetIdx);
-    return ch;
-  }
-
-  // Setzt Bank + Program auf einem Channel, mit korrekter SF-Priorität.
-  // priorityOrder stellt die gewünschte SF vorne an — der Worklet verarbeitet
-  // Messages in Reihenfolge, also greift die Reihenfolge für den programChange.
-  _setProgramOnChannel(ch, sfIdx, presetIdx) {
-    const sf = this.soundfonts[sfIdx];
-    if (!sf || !sf.presets[presetIdx]) return;
-    const p = sf.presets[presetIdx];
-
-    // Cache-Key enthält auch die aktuelle Position der SF in priorityOrder,
-    // damit nach einem Sequencer-Step (der die Order verändert hat) neu gesendet wird.
-    const orderPos = sf.sfId && this.synth.soundBankManager
-      ? this.synth.soundBankManager.priorityOrder.indexOf(sf.sfId)
-      : 0;
-    const cacheKey = `${sf.sfId}:${p.bank}:${p.bankLSB ?? 0}:${p.program}:${orderPos}`;
-    if (this._chProgKey.get(ch) === cacheKey) return;
-    this._chProgKey.set(ch, cacheKey);
-
-    try {
-      // priorityOrder nur setzen wenn diese SF nicht schon vorne steht
-      if (sf.sfId && this.synth.soundBankManager) {
-        const current = this.synth.soundBankManager.priorityOrder;
-        if (current[0] !== sf.sfId) {
-          this.synth.soundBankManager.priorityOrder =
-            [sf.sfId, ...current.filter(id => id !== sf.sfId)];
-        }
-      }
-      this.synth.controllerChange(ch, 0,  p.bank   ?? 0);
-      this.synth.controllerChange(ch, 32, p.bankLSB ?? 0);
-      this.synth.programChange(ch, p.program);
-    } catch(e) { console.warn('_setProgramOnChannel error:', e); }
-  }
-
-  // Kanal vorab zuweisen (z.B. für Saturation vor erstem noteOn)
-  ensureChannel(layerId, sfIdx, presetIdx) {
-    return this._getChannel(layerId, sfIdx, presetIdx);
-  }
-
-  // Reset channel when layer changes preset
-  resetChannel(layerId) {
-    [...this._channels.entries()]
-      .filter(([k]) => k.startsWith(`${layerId}_`))
-      .forEach(([k, ch]) => {
-        this._channels.delete(k);
-        this._chProgKey.delete(ch); // Cache löschen damit neues Preset gesetzt wird
-      });
-  }
-
-  // ── FX — SpessaSynth has built-in reverb/chorus ───────────────
+  // ── FX ────────────────────────────────────────────────────────
   setVol(v) {
     this._vol = v;
-    // masterGain bleibt bei 1.0 — nur SpessaSynth steuert die Lautstärke
-    if (this.synth) try { this.synth.setMasterParameter('masterGain', v); } catch(e) {}
+    this.synths.forEach(sfObj => {
+      try { sfObj.synth.setMasterParameter('masterGain', v); } catch(e) {}
+    });
   }
 
   setReverb(wet, size) {
     if (wet  !== undefined) this._reverbWet  = wet;
     if (size !== undefined) this._reverbSize = size;
     this._applyEffectsGain();
-    // Reverb-Größe via synthetische Impulsantwort
-    if (size !== undefined && this.synth && this.ctx) {
-      this._applyReverbSize(this._reverbSize);
-    }
+    if (size !== undefined) this._applyReverbSize(this._reverbSize);
   }
 
   _applyReverbSize(size) {
-    // GS SysEx für Reverb Time: F0 41 10 42 12 40 01 34 tt cs F7
-    // addr1=0x40, addr2=0x01, addr3=0x34 (52) = Reverb Time, 0–127
-    // size: 0.3–6.0 (Sekunden vom Slider) → 0–127
-    if (!this.synth) return;
-    try {
-      const time = Math.round(Math.min(127, Math.max(0, (size - 0.3) / 5.7 * 127)));
-      // Roland GS Checksum: 128 - ((addr1+addr2+addr3+data) & 0x7F)
-      const cs = (128 - ((0x40 + 0x01 + 0x34 + time) & 0x7F)) & 0x7F;
-      // F0 41 10 42 12  40 01 34  tt  cs  F7
-      this.synth.systemExclusive(
-        [0x41, 0x10, 0x42, 0x12, 0x40, 0x01, 0x34, time, cs, 0xF7]
-      );
-    } catch(e) { console.warn('_applyReverbSize error:', e); }
+    this.synths.forEach(sfObj => {
+      try {
+        const time = Math.round(Math.min(127, Math.max(0, (size - 0.3) / 5.7 * 127)));
+        const cs = (128 - ((0x40 + 0x01 + 0x34 + time) & 0x7F)) & 0x7F;
+        sfObj.synth.systemExclusive([0x41, 0x10, 0x42, 0x12, 0x40, 0x01, 0x34, time, cs, 0xF7]);
+      } catch(e) {}
+    });
   }
 
   setChorus(wet) {
@@ -2450,27 +2339,19 @@ async ensureCtx() {
   }
 
   _applyEffectsGain() {
-    if (!this.synth) return;
-    const rev = Math.min(1, this._reverbWet * 1.5);
+    const rev = Math.min(1, this._reverbWet  * 1.5);
     const cho = Math.min(1, this._chorusWet * 1.5);
-    console.log(`Effects: reverb=${rev.toFixed(2)} chorus=${cho.toFixed(2)}`);
-    // v4: einzelne setMasterParameter-Aufrufe statt setEffectsGain
-    try { this.synth.setMasterParameter('reverbGain', rev); } catch(e) { console.log('reverbGain error:', e); }
-    try { this.synth.setMasterParameter('chorusGain', cho); } catch(e) { console.log('chorusGain error:', e); }
+    this.synths.forEach(sfObj => this._applyEffectsGainTo(sfObj.synth, rev, cho));
   }
 
-  setChorusRate(rate) { /* nicht in v3 extern steuerbar */ }
-
-  setDelay(wet, time) {
-    this._delayWet = wet ?? this._delayWet;
-    // SpessaSynth v3 hat kein Delay — ignorieren
+  _applyEffectsGainTo(synth, rev, cho) {
+    rev = rev ?? Math.min(1, this._reverbWet  * 1.5);
+    cho = cho ?? Math.min(1, this._chorusWet * 1.5);
+    try { synth.setMasterParameter('reverbGain', rev); } catch(e) {}
+    try { synth.setMasterParameter('chorusGain', cho); } catch(e) {}
   }
 
-  setEqLow(v)  { this._eqLow  = v; if (this.eqLowNode)  this.eqLowNode.gain.value  = v; }
-  setEqMid(v)  { this._eqMid  = v; if (this.eqMidNode)  this.eqMidNode.gain.value  = v; }
-  setEqHigh(v) { this._eqHigh = v; if (this.eqHighNode) this.eqHighNode.gain.value = v; }
-
-  _applyEQ() {} // unused — setEqXxx direkt
+  setChorusRate(rate) {}
 
   setDelay(wet, time) {
     if (wet  !== undefined) this._delayWet = wet;
@@ -2479,6 +2360,10 @@ async ensureCtx() {
     if (this.delayDryGain) this.delayDryGain.gain.value = 1;
   }
 
+  setEqLow(v)  { this._eqLow  = v; if (this.eqLowNode)  this.eqLowNode.gain.value  = v; }
+  setEqMid(v)  { this._eqMid  = v; if (this.eqMidNode)  this.eqMidNode.gain.value  = v; }
+  setEqHigh(v) { this._eqHigh = v; if (this.eqHighNode) this.eqHighNode.gain.value = v; }
+
   setFilterFreq(freq, type) {
     if (!this.filterNode) return;
     if (type === 'off' || !type) { this.filterNode.frequency.value = 20000; return; }
@@ -2486,46 +2371,30 @@ async ensureCtx() {
     this.filterNode.frequency.value = freq;
   }
 
-  // ── Per-channel Saturation (Soft-Clipping WaveShaper) ────────
-  // v4: synth.connectChannel(node, ch) leitet den Channel-Output durch node.
-  // Für jeden Channel wird lazy ein WaveShaper + paralleler Wet-Gain erstellt.
-  setChannelSaturation(ch, v) {
-    if (!this.synth || !this.ctx) return;
+  // ── Per-layer Saturation (Soft-Clip WaveShaper) ───────────────
+  // sfIdx wird jetzt explizit mitgegeben — verhindert Kollisionen
+  // wenn zwei Synths zufällig denselben Kanal-Index nutzen.
+  setChannelSaturation(sfIdx, ch, v) {
+    if (!this.synths[sfIdx] || !this.ctx) return;
     v = Math.max(0, Math.min(1, v));
+    const satKey = `${sfIdx}_${ch}`;
 
-    if (!this._channelSaturators.has(ch)) {
-      // Merge-Gain: Channel-Output → hier sammeln
-      const merge = this.ctx.createGain();
-      merge.gain.value = 1;
-
-      // Dry-Pfad: merge → masterGain (direkt)
+    if (!this._channelSaturators.has(satKey)) {
+      const merge   = this.ctx.createGain(); merge.gain.value = 1;
       merge.connect(this.masterGain);
-
-      // WaveShaper (Soft-Clip)
-      const shaper = this.ctx.createWaveShaper();
-      shaper.oversample = '4x';
-
-      // Wet-Gain: shaper-Ausgang → masterGain (parallel zum dry)
-      const wetGain = this.ctx.createGain();
-      wetGain.gain.value = 0;
+      const shaper  = this.ctx.createWaveShaper(); shaper.oversample = '4x';
+      const wetGain = this.ctx.createGain(); wetGain.gain.value = 0;
       merge.connect(shaper);
       shaper.connect(wetGain);
       wetGain.connect(this.masterGain);
-
-      // SpessaSynth v4: Channel-Output in unseren Merge-Gain leiten
-      // (connectChannel liefert den Ziel-Node zurück)
-      try { this.synth.connectChannel(merge, ch); } catch(e) {
-        console.warn('connectChannel ch', ch, e);
+      try { this.synths[sfIdx].synth.connectChannel(merge, ch); } catch(e) {
+        console.warn('connectChannel sfIdx', sfIdx, 'ch', ch, e);
       }
-
-      this._channelSaturators.set(ch, { shaper, wetGain });
+      this._channelSaturators.set(satKey, { shaper, wetGain });
     }
 
-    const { shaper, wetGain } = this._channelSaturators.get(ch);
-
-    // Soft-Clip Kurve berechnen
-    const k = v * 120;
-    const n = 512;
+    const { shaper, wetGain } = this._channelSaturators.get(satKey);
+    const k = v * 120, n = 512;
     const curve = new Float32Array(n);
     for (let i = 0; i < n; i++) {
       const x = (i * 2) / n - 1;
@@ -2535,50 +2404,53 @@ async ensureCtx() {
     wetGain.gain.setTargetAtTime(v * 0.7, this.ctx.currentTime, 0.02);
   }
 
-  // Globales setSaturation bleibt als Compat-Stub (wird nicht mehr genutzt)
-  setSaturation(v) { /* per-layer via setChannelSaturation — siehe _applyBuzz */ }
-  setWidth(v)      { /* nicht implementiert */ }
+  setSaturation(v) {}
+  setWidth(v)      {}
 
-  // ── Compat stubs (UI calls these) ────────────────────────────
+  // ── SF2 entfernen ─────────────────────────────────────────────
+  removeSoundfont(sfIdx) {
+    const sfObj = this.synths[sfIdx];
+    if (!sfObj) return;
+    // Alle Voices dieser SF2 stoppen
+    [...this.voices.entries()]
+      .filter(([, v]) => v.sfIdx === sfIdx)
+      .forEach(([k]) => this._killVoice(k));
+    // Synth trennen
+    try { sfObj.synth.stopAll(true); } catch(e) {}
+    try { sfObj.synth.disconnect();  } catch(e) {}
+    this.synths.splice(sfIdx, 1);
+    // sfIdx in verbleibenden Voices korrigieren
+    [...this.voices.entries()].forEach(([k, v]) => {
+      if (v.sfIdx > sfIdx) v.sfIdx--;
+    });
+    // sfIdx in Layern korrigieren
+    if (typeof layers !== 'undefined') {
+      layers.forEach(l => {
+        if      (l.sfIdx > sfIdx) l.sfIdx--;
+        else if (l.sfIdx === sfIdx) l.sfIdx = Math.max(0, this.synths.length - 1);
+      });
+    }
+  }
+
+  // ── Compat-Stubs ──────────────────────────────────────────────
   async ensureAndGetStartT() {
     await this.ensureCtx();
     return this.ctx ? this.ctx.currentTime + 0.05 : 0;
   }
-
-  _silentWarm(sfIdx, presetIdx) { /* SpessaSynth handles internally */ }
-  predecodeAll(sfIdx, onProgress) {
-    // SpessaSynth handles decoding internally
-    const sf = this.soundfonts[sfIdx];
-    if (!sf) return;
-    onProgress(1, 1, 0, false); // report "done"
-  }
-
-  prewarmPreset(sfIdx, presetIdx) { /* SpessaSynth handles internally */ }
-
-  getZones(sfIdx, presetIdx) { return []; }   // not needed
-  findZone(sfIdx, presetIdx, midi, vel) { return null; } // not needed
-  findZones(sfIdx, presetIdx, midi, vel) { return []; }  // not needed
-  getBuffer(sfIdx, sampleID) { return null; }            // not needed
-  timeCents(tc) { return Math.pow(2, tc/1200); }
-  removeSoundfont(sfIdx) {
-    const sf = this.soundfonts[sfIdx];
-    if (!sf) return;
-    // v4: Sound Bank per ID entfernen
-    if (this.synth && sf.sfId) {
-      this.synth.soundBankManager.deleteSoundBank(sf.sfId)
-        .catch(e => console.warn('deleteSoundBank error:', e));
-    }
-    this.soundfonts.splice(sfIdx, 1);
-    this.stopAll();
-  }
-  get presets() { return this.soundfonts.length ? this.soundfonts[0].presets : []; }
-  removeLayerNode(layerId) { this.layerNodes.delete(layerId); }
-  getLayerNode(layerId) { return this.masterGain; }
-  setLayerCompressor() {}
-
-  // ── Compat: voiceDestination for drum pads etc. ───────────────
-  get voiceDestination() { return this.masterGain; }
-  _enforcePolyphony() {}
+  _silentWarm(sfIdx, presetIdx)          {}
+  predecodeAll(sfIdx, onProgress)        { const sf = this.synths[sfIdx]; if (!sf) return; onProgress(1, 1, 0, false); }
+  prewarmPreset(sfIdx, presetIdx)        {}
+  getZones(sfIdx, presetIdx)             { return []; }
+  findZone(sfIdx, presetIdx, midi, vel)  { return null; }
+  findZones(sfIdx, presetIdx, midi, vel) { return []; }
+  getBuffer(sfIdx, sampleID)             { return null; }
+  timeCents(tc)                          { return Math.pow(2, tc / 1200); }
+  get presets()                          { return this.synths.length ? this.synths[0].presets : []; }
+  removeLayerNode(layerId)               {}
+  getLayerNode(layerId)                  { return this.masterGain; }
+  setLayerCompressor()                   {}
+  get voiceDestination()                 { return this.masterGain; }
+  _enforcePolyphony()                    {}
 }
 
 
@@ -2773,17 +2645,10 @@ function addLayer(sfIdx = 0, presetIdx = 0, midiCh = null) {
 }
 
 function removeLayer(id) {
-  // Stop all voices for this layer
-  for (const [key, v] of engine.voices) {
-    if (key.startsWith(id+'_')) {
-      const now = engine.ctx ? engine.ctx.currentTime : 0;
-      v.gainNode.gain.cancelScheduledValues(now);
-      v.gainNode.gain.setValueAtTime(v.gainNode.gain.value, now);
-      v.gainNode.gain.linearRampToValueAtTime(0, now+0.1);
-      try { v.src.stop(now+0.15); } catch(e){}
-      engine.voices.delete(key);
-    }
-  }
+  // Alle Voices dieses Layers via SpessaSynth stoppen
+  [...engine.voices.keys()]
+    .filter(k => k.startsWith(String(id) + '_'))
+    .forEach(k => engine._killVoice(k));
   layers = layers.filter(l => l.id !== id);
   engine.removeLayerNode(String(id));
   renderLayers();
@@ -3363,14 +3228,12 @@ function renderDrawbars() {
 function _applyBuzz() {
   layers.forEach(layer => {
     // Channel vorab sicherstellen (lazy, falls noch kein noteOn erfolgte)
-    if (engine._spessaReady && engine.soundfonts[layer.sfIdx]) {
+    if (engine._workletReady && engine.soundfonts[layer.sfIdx]) {
       engine.ensureChannel(layer.id, layer.sfIdx, layer.presetIdx);
     }
 
-    // Alle Channels die diesem Layer gehören ermitteln
-    const layerChannels = [...engine._channels.entries()]
-      .filter(([k]) => k.startsWith(layer.id + '_'))
-      .map(([, ch]) => ch);
+    // Alle Channels + Synth-Instanzen für diesen Layer
+    const layerChannels = engine.getLayerChannels(layer.id);
     if (!layerChannels.length) return;
 
     const sat    = (layer.saturation ?? 0) / 100;
@@ -3378,7 +3241,7 @@ function _applyBuzz() {
     const buzz   = buzzOn ? 0.4 + (layer.buzzIntensity ?? 70) / 100 * 0.55 : 0;
     const total  = Math.min(1, Math.max(sat, buzz));
 
-    layerChannels.forEach(ch => engine.setChannelSaturation(ch, total));
+    layerChannels.forEach(({ ch, sfIdx }) => engine.setChannelSaturation(sfIdx, ch, total));
   });
 }
 
@@ -3462,18 +3325,10 @@ function renderLayers() {
     muteBtn.style.cssText = 'background:#07070f;border:1px solid var(--border);width:36px;height:36px;border-radius:7px;cursor:pointer;font-size:.9rem;transition:all .12s;flex-shrink:0;display:flex;align-items:center;justify-content:center;color:var(--accent)';
     muteBtn.addEventListener('click', () => {
       layer.muted = !layer.muted;
-      if (layer.muted && engine.ctx) {
-        for (const [key] of engine.voices) {
-          if (key.startsWith(layer.id+'_')) {
-            const v = engine.voices.get(key);
-            const now = engine.ctx.currentTime;
-            v.gainNode.gain.cancelScheduledValues(now);
-            v.gainNode.gain.setValueAtTime(v.gainNode.gain.value, now);
-            v.gainNode.gain.linearRampToValueAtTime(0, now+0.1);
-            try { v.src.stop(now+0.15); } catch(e){}
-            engine.voices.delete(key);
-          }
-        }
+      if (layer.muted) {
+        [...engine.voices.keys()]
+          .filter(k => k.startsWith(String(layer.id) + '_'))
+          .forEach(k => engine._killVoice(k));
       }
       renderLayers();
     });
@@ -4072,17 +3927,9 @@ function renderLayers() {
       if (layer.melody) layer.bass = false;
       if (!layer.melody) { layer.melodyNote = null; }
       else {
-        for (const [key] of engine.voices) {
-          if (key.startsWith(layer.id+'_')) {
-            const v = engine.voices.get(key);
-            const now = engine.ctx ? engine.ctx.currentTime : 0;
-            v.gainNode.gain.cancelScheduledValues(now);
-            v.gainNode.gain.setValueAtTime(v.gainNode.gain.value, now);
-            v.gainNode.gain.linearRampToValueAtTime(0, now+0.08);
-            try { v.src.stop(now+0.1); } catch(e){}
-            engine.voices.delete(key);
-          }
-        }
+        [...engine.voices.keys()]
+          .filter(k => k.startsWith(String(layer.id) + '_'))
+          .forEach(k => engine._killVoice(k));
         layer.melodyNote = null;
       }
       renderLayers();
@@ -4096,17 +3943,9 @@ function renderLayers() {
       layer.bass = !layer.bass;
       if (layer.bass) {
         layer.melody = false;
-        for (const [key] of engine.voices) {
-          if (key.startsWith(layer.id+'_')) {
-            const v = engine.voices.get(key);
-            const now = engine.ctx ? engine.ctx.currentTime : 0;
-            v.gainNode.gain.cancelScheduledValues(now);
-            v.gainNode.gain.setValueAtTime(v.gainNode.gain.value, now);
-            v.gainNode.gain.linearRampToValueAtTime(0, now+0.08);
-            try { v.src.stop(now+0.1); } catch(e){}
-            engine.voices.delete(key);
-          }
-        }
+        [...engine.voices.keys()]
+          .filter(k => k.startsWith(String(layer.id) + '_'))
+          .forEach(k => engine._killVoice(k));
         layer.bassNote = null;
       } else { layer.bassNote = null; }
       renderLayers();
@@ -5412,14 +5251,27 @@ document.getElementById('panicNavBtn')?.addEventListener('click', doPanic);
   }
 
   function sendValue(pct) {
-    if (!engine.synth) return;
+    if (!engine.synths.length) return;
     const val = pctToVal(Math.max(0,Math.min(1,pct)));
     const t = target();
-    const channels = new Set(engine._channels.values());
-    if (t.id==='pitch')      channels.forEach(ch=>{ try{engine.synth.pitchWheel(ch,val+8192);}catch(e){} });
-    else if (t.id==='mod')   channels.forEach(ch=>{ try{engine.synth.controllerChange(ch,1,val);}catch(e){} });
-    else if (t.id==='vol')   channels.forEach(ch=>{ try{engine.synth.controllerChange(ch,7,val);}catch(e){} });
-    else if (t.id==='vel')   layers.forEach(l=>{ l.velOverride=val; l.velMode='free'; });
+    if (t.id==='vel') { layers.forEach(l=>{ l.velOverride=val; l.velMode='free'; }); return; }
+    // Alle aktiven Channels nach Synth-Instanz gruppieren
+    const synthMap = new Map(); // synth → Set<ch>
+    engine.synths.forEach(sfObj => {
+      sfObj.channels.forEach(ch => {
+        if (!synthMap.has(sfObj.synth)) synthMap.set(sfObj.synth, new Set());
+        synthMap.get(sfObj.synth).add(ch);
+      });
+    });
+    synthMap.forEach((channels, synth) => {
+      channels.forEach(ch => {
+        try {
+          if      (t.id==='pitch') synth.pitchWheel(ch, val + 8192);
+          else if (t.id==='mod')   synth.controllerChange(ch, 1, val);
+          else if (t.id==='vol')   synth.controllerChange(ch, 7, val);
+        } catch(e) {}
+      });
+    });
   }
 
   function springBack() {
@@ -5596,13 +5448,14 @@ function drumPlayPad(sfIdx, midiNote, vel, noteMs = 80) {
   if (!engine.soundfonts[sfIdx]) return;
   const presetIdx = drumFindPreset(sfIdx);
   // SpessaSynth: use channel 9 for drums
-  if (engine.synth) {
+  const _drumSynth = engine.getSynthFor(sfIdx);
+  if (_drumSynth) {
     engine.ensureCtx().then(() => {
-      const sf = engine.soundfonts[sfIdx];
+      const sf = engine.synths[sfIdx];
       const p = sf?.presets[presetIdx];
-      if (p) engine.synth.programChange(9, p.program);
-      engine.synth.noteOn(9, midiNote, vel);
-      setTimeout(() => engine.synth.noteOff(9, midiNote), noteMs);
+      if (p) _drumSynth.programChange(9, p.program);
+      _drumSynth.noteOn(9, midiNote, vel);
+      setTimeout(() => _drumSynth.noteOff(9, midiNote), noteMs);
     });
     return;
   }
@@ -5635,8 +5488,9 @@ function drumPlayPad(sfIdx, midiNote, vel, noteMs = 80) {
     gainNode.gain.linearRampToValueAtTime(0.001, startT + 0.003);
     gainNode.gain.exponentialRampToValueAtTime(peak, startT + attackDur);
     src.start(startT);
-    engine.voices.set(key, { src, gainNode, startT, attackEnd: startT + attackDur, peak });
-    // Simulate note-off after noteMs → triggers natural release envelope
+    // Dieser Fallback-Pfad wird bei SpessaSynth nie erreicht.
+    // voices-Eintrag ohne gainNode/src — _killVoice ignoriert ihn gracefully.
+    engine.voices.set(key, { ch: 9, midi: midiNote, sfIdx: sfIdx, startT });
     setTimeout(() => engine._killAllVoicesForNote(layerId, midiNote), noteMs);
   });
 }
@@ -5810,10 +5664,9 @@ function tboneStopNote() {
   const transposed = tboneCurrentMidi + globalTranspose + (layer.transpose ?? 0);
   engine.stop(transposed, layer.id);
   // Pitch Bend zurück auf Mitte damit nächste Note sauber startet
-  const channels = [...engine._channels.entries()]
-    .filter(([k]) => k.startsWith(layer.id + '_'))
-    .map(([, ch]) => ch);
-  channels.forEach(ch => { try { engine.synth.pitchWheel(ch, 8192); } catch(e) {} });
+  engine.getLayerChannels(layer.id).forEach(({ ch, synth }) => {
+    try { synth.pitchWheel(ch, 8192); } catch(e) {}
+  });
   tboneCurrentMidi = null;
 }
 
@@ -5921,22 +5774,16 @@ function tboneSetSlideFromX(clientX) {
 // entspricht einer Verstimmung von 0..–100 Cent (halber Halbton = 4096 PW-Units).
 // Bei exakter ganzer Position → PW zurück auf Mitte (8192).
 function tbone_applyPitchBend() {
-  if (!engine.synth || !tboneLayerId) return;
+  if (!engine.synths.length || !tboneLayerId) return;
   const layer = layers.find(l => l.id === tboneLayerId);
   if (!layer) return;
 
-  const frac    = tboneSlidePos % 1;          // 0.0–<1.0: Abstand zur nächsten Position
-  // frac=0 → auf Position (kein Bend), frac→1 → fast nächste Position (fast -100 Cent)
-  // MIDI Pitch Bend: 8192=Mitte, 0=-PW_range, 16383=+PW_range
-  // Standard PW-Range = ±2 Halbton → 100 Cent = 8192/2 = 4096 Units
-  const bentUnits = Math.round(frac * 4096);  // 0 = kein Bend, 4096 = -1 Halbton
-  const pw = 8192 - bentUnits;                 // Slide zieht nach unten → negativer Bend
+  const frac      = tboneSlidePos % 1;
+  const bentUnits = Math.round(frac * 4096);
+  const pw        = 8192 - bentUnits;
 
-  const channels = [...engine._channels.entries()]
-    .filter(([k]) => k.startsWith(layer.id + '_'))
-    .map(([, ch]) => ch);
-  channels.forEach(ch => {
-    try { engine.synth.pitchWheel(ch, pw); } catch(e) {}
+  engine.getLayerChannels(layer.id).forEach(({ ch, synth }) => {
+    try { synth.pitchWheel(ch, pw); } catch(e) {}
   });
 }
 
@@ -6408,12 +6255,13 @@ function handleMidiMessage(msg) {
       const raw = (d2 << 7) | d1;
       const bend = (raw - 8192) / 8192;
       updatePitchBar(bend);
-      if (engine.ctx) {
-        const ratio = Math.pow(2, bend * 2 / 12);
-        engine.voices.forEach(v => {
-          if (v.src) v.src.playbackRate.setTargetAtTime(
-            v.src.playbackRate.value * ratio, engine.ctx.currentTime, 0.01
-          );
+      if (engine.synths.length) {
+        // SpessaSynth verarbeitet Pitch-Bend nativ via pitchWheel
+        const pw = Math.round((bend + 1) * 8191.5); // 0–16383
+        engine.synths.forEach(sfObj => {
+          sfObj.channels.forEach(ch => {
+            try { sfObj.synth.pitchWheel(ch, pw); } catch(e) {}
+          });
         });
       }
       break;
@@ -6958,30 +6806,27 @@ function seqAddRow() {
 
 function seqScheduleStep(stepIdx, time) {
   const ctx = engine.ctx;
-  const DRUM_CH = 9;  // CH9 = immer Drums in GM (isDrum wird via setDrums gesetzt)
-
-  // CH9 einmalig als Drum-Channel sicherstellen
-  if (engine.synth) { try { engine.synth.setDrums(DRUM_CH, true); } catch(e) {} }
+  const DRUM_CH = 9;
 
   seq.rows.forEach(row => {
     if (row.muted || !row.pattern[stepIdx]) return;
-    const sf = engine.soundfonts[row.sfIdx];
+    const sf = engine.synths[row.sfIdx];
     if (!sf) return;
     const p = sf.presets[row.presetIdx];
     if (!p) return;
+    const rowSynth = sf.synth;
 
     const msDelay   = Math.max(0, (time - ctx.currentTime) * 1000);
     const noteDurMs = Math.round(seqSecPerStep() * 0.85 * 1000);
 
     setTimeout(() => {
       if (!seq.running) return;
-      // CH9 ist immer Drums (isDrum=true) — priorityOrder NICHT anfassen,
-      // das würde die Layer auf dem Keyboard stören!
-      // programChange auf CH9 wählt das Kit (isDrum bleibt true).
-      engine.synth.programChange(DRUM_CH, p.program);
-      engine.synth.controllerChange(DRUM_CH, 7, Math.round(row.vel));
-      engine.synth.noteOn(DRUM_CH, row.note, row.vel);
-      setTimeout(() => { try { engine.synth.noteOff(DRUM_CH, row.note); } catch(e) {} }, noteDurMs);
+      // Jede Synth-Instanz kennt nur ihre SF2 — kein priorityOrder-Konflikt
+      try { rowSynth.setDrums(DRUM_CH, true); } catch(e) {}
+      rowSynth.programChange(DRUM_CH, p.program);
+      rowSynth.controllerChange(DRUM_CH, 7, Math.round(row.vel));
+      rowSynth.noteOn(DRUM_CH, row.note, row.vel);
+      setTimeout(() => { try { rowSynth.noteOff(DRUM_CH, row.note); } catch(e) {} }, noteDurMs);
     }, msDelay);
 
     // Visual flash
@@ -8372,60 +8217,66 @@ function jamPlayNote(playerName, layerIdx, midi, vel) {
   console.log(`jamPlayNote: ${playerName} midi=${midi} vel=${vel} layerIdx=${layerIdx}`);
   const player = jamPlayers.get(playerName);
   if (!player || player.muted) { console.log('jamPlayNote: no player or muted'); return; }
-  if (!engine.soundfonts.length || !engine.synth) { console.log('jamPlayNote: no soundfonts or synth'); return; }
+  if (!engine.synths.length) { console.log('jamPlayNote: keine Synths geladen'); return; }
 
   const layerInfo = player.layers[layerIdx] || player.layers[0];
-  if (!layerInfo) { console.log('jamPlayNote: no layerInfo, layers=', player.layers?.length); return; }
+  if (!layerInfo) { console.log('jamPlayNote: kein layerInfo, layers=', player.layers?.length); return; }
 
   const found = jamFindPreset(layerInfo.sfName, layerInfo.presetName, layerInfo.program, layerInfo.bank);
-  if (!found) { console.log('jamPlayNote: preset not found', layerInfo); return; }
+  if (!found) { console.log('jamPlayNote: Preset nicht gefunden', layerInfo); return; }
 
-  // Verwende Channel basierend auf Spieler-Index statt layerIdx
-  // damit jeder Spieler einen eigenen Channel bekommt
   const playerNames = [...jamPlayers.keys()];
-  const playerIdx = playerNames.indexOf(playerName);
-  const ch = Math.min(15, 12 + (playerIdx >= 0 ? playerIdx : 0));
+  const playerIdx   = playerNames.indexOf(playerName);
+  const ch          = Math.min(15, 12 + (playerIdx >= 0 ? playerIdx : 0));
 
-  const vol = 127; // Remote-Spieler immer volle Kanal-Lautstärke via CC7
-  const p = engine.soundfonts[found.sfIdx]?.presets[found.presetIdx];
-  // Velocity boosten falls zu leise (Android-Touch oft <50)
+  const sfObj      = engine.synths[found.sfIdx];
+  if (!sfObj) return;
+  const p          = sfObj.presets[found.presetIdx];
   const boostedVel = Math.min(127, Math.max(vel, Math.round((layerInfo.vol ?? 1) * (player.vol ?? 1) * 110)));
 
   engine.ensureCtx().then(() => {
     try {
       if (p) {
+        // Cache-Key enthält sfIdx → verhindert Kollision bei mehreren SF2s
         const presetKey = `${found.sfIdx}:${found.presetIdx}`;
-        if (_jamChPreset[ch] !== presetKey) {
-          _jamChPreset[ch] = presetKey;
-          engine.synth.controllerChange(ch, 120, 0);
-          engine.synth.controllerChange(ch, 64, 0);
-          engine.synth.controllerChange(ch, 0,  p.bank   ?? 0);
-          engine.synth.controllerChange(ch, 32, p.bankLSB ?? 0);
-          engine.synth.programChange(ch, p.program);
+        const cacheKey  = `${found.sfIdx}:${ch}`;
+        if (_jamChPreset[cacheKey] !== presetKey) {
+          _jamChPreset[cacheKey] = presetKey;
+          sfObj.synth.controllerChange(ch, 120, 0);
+          sfObj.synth.controllerChange(ch, 64,  0);
+          sfObj.synth.controllerChange(ch, 0,   p.bank   ?? 0);
+          sfObj.synth.controllerChange(ch, 32,  p.bankLSB ?? 0);
+          sfObj.synth.programChange(ch, p.program);
         }
-        engine.synth.controllerChange(ch, 7, vol); // Immer CC7=127
+        sfObj.synth.controllerChange(ch, 7, 127);
       }
-      engine.synth.noteOn(ch, midi, boostedVel);
-      console.log(`jamPlayNote: noteOn ch=${ch} midi=${midi} vel=${boostedVel}`);
+      sfObj.synth.noteOn(ch, midi, boostedVel);
+      console.log(`jamPlayNote: noteOn sfIdx=${found.sfIdx} ch=${ch} midi=${midi} vel=${boostedVel}`);
       const key = `jam_${playerName}_${layerIdx}_${midi}`;
-      engine.voices.set(key, { ch, midi });
+      engine.voices.set(key, { ch, midi, sfIdx: found.sfIdx });
     } catch(e) { console.log('jamPlayNote error:', e.message); }
   });
 }
 
 function jamStopNote(playerName, layerIdx, midi) {
-  const player = jamPlayers.get(playerName);
-  if (!player || !engine.synth) return;
-  // Channel-Berechnung identisch zu jamPlayNote
-  const playerNames = [...jamPlayers.keys()];
-  const playerIdx = playerNames.indexOf(playerName);
-  const ch = Math.min(15, 12 + (playerIdx >= 0 ? playerIdx : 0));
-  try {
-    engine.synth.controllerChange(ch, 64, 0); // Sustain-Pedal aus
-    engine.synth.noteOff(ch, midi);            // v4: kein drittes Argument
-  } catch(e) {}
   const key = `jam_${playerName}_${layerIdx}_${midi}`;
-  engine.voices.delete(key);
+  const v   = engine.voices.get(key);
+  if (v) {
+    const sfObj = engine.synths[v.sfIdx];
+    if (sfObj) {
+      try { sfObj.synth.controllerChange(v.ch, 64, 0); } catch(e) {}
+      try { sfObj.synth.noteOff(v.ch, v.midi);         } catch(e) {}
+    }
+    engine.voices.delete(key);
+  } else {
+    // Fallback: auf allen Synths versuchen
+    const playerNames = [...jamPlayers.keys()];
+    const playerIdx   = playerNames.indexOf(playerName);
+    const ch          = Math.min(15, 12 + Math.max(0, playerIdx));
+    engine.synths.forEach(sfObj => {
+      try { sfObj.synth.controllerChange(ch, 64, 0); sfObj.synth.noteOff(ch, midi); } catch(e) {}
+    });
+  }
 }
 
 // ── Mixer UI ──────────────────────────────────────────────────
