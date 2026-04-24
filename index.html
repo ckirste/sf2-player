@@ -1020,7 +1020,7 @@ input[type=range]::-moz-range-track{height:6px;background:inherit;border-radius:
 
   <div class="header">
     <button class="fs-toggle" id="fsToggleBtn" title="Vollbild ein/aus">⛶</button>
-    <h1>Ensemble_v46</h1>
+    <h1>Ensemble_v47</h1>
     <div class="sub">by c. kirste</div>
     <button class="settings-toggle" id="settingsToggle" title="Erscheinungsbild anpassen">⚙</button>
   </div>
@@ -6600,7 +6600,7 @@ window.chordUpdate = function() {
 // BPM im Arp-Panel (direkt mit Metronom verknüpft)
 function arpUpdateBpmDisplay() {
   const el = document.getElementById('arpBpmDisplay');
-  if (el) el.textContent = metro.bpm;
+  if (el && typeof metro !== 'undefined') el.textContent = metro.bpm;
 }
 document.getElementById('arpBpmDown').addEventListener('click', () => {
   metroSetBpm(metro.bpm - 1); arpUpdateBpmDisplay();
@@ -6619,12 +6619,19 @@ document.getElementById('arpBpmUp').addEventListener('click', () => {
     btn.addEventListener(ev, () => clearInterval(iv)));
 });
 // Sync: wenn Metro-BPM von außen geändert wird → Arp-Display updaten
-const _origMetroSetBpmArp = window.metroSetBpm ?? metroSetBpm;
-window.metroSetBpm = function(bpm) {
-  _origMetroSetBpmArp(bpm);
+// BPM-Sync: erst nach Metro-Init aktiv (metro wird später definiert)
+window._arpBpmSyncInstalled = false;
+function arpInstallBpmSync() {
+  if (window._arpBpmSyncInstalled) return;
+  window._arpBpmSyncInstalled = true;
+  const _prev = window.metroSetBpm;
+  window.metroSetBpm = function(bpm) {
+    _prev(bpm);
+    arpUpdateBpmDisplay();
+  };
   arpUpdateBpmDisplay();
-};
-arpUpdateBpmDisplay();
+}
+// Wird nach metroBuildBeats()/metroSetBpm(120) aufgerufen
 
 // Velocity
 document.getElementById('arpVelSl').addEventListener('input', function() {
@@ -7514,6 +7521,7 @@ document.getElementById('metroVolSlider').addEventListener('input', function() {
 
 metroBuildBeats();
 metroSetBpm(120);
+arpInstallBpmSync(); // jetzt ist metro definiert
 
 // ══════════════════════════════════════════════════════════════
 //  MIDI RECORDER / PLAYER
